@@ -1,0 +1,37 @@
+[package]
+name = "nibleaf-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+fs4.workspace = true
+object_store.workspace = true
+hex.workspace = true
+lindera.workspace = true
+nibleaf-core = { path = "../core" }
+pulldown-cmark.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tar.workspace = true
+zstd.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+metrics.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+url.workspace = true
+

@@ -1,0 +1,6 @@
+{
+  "extends": "@nibleaf/tsconfig/base.json",
+  "compilerOptions": {
+    "strictNullChecks": true
+  }
+}

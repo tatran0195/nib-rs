@@ -1,0 +1,22 @@
+{
+  "name": "@nibleaf/custom-domain-edge",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cf build",
+    "dev": "cf dev",
+    "upload": "cf workers versions create --prebuilt --mode production",
+    "deploy": "cf workers deployments create --worker nibleaf-custom-domain-edge --strategy percentage",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "cf workers types && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-ad79608dd",
+    "@nibleaf/tsconfig": "workspace:*",
+    "cf": "1.0.0-beta.6",
+    "typescript": "^7.0.2",
+    "vite": "8.3.1",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "target": "whole_backend_multi_host",
+  "environment_available": "local_disposable_only",
+  "benchmark_profile_documents": 5000,
+  "slo_approved": false,
+  "capabilities": [
+    {
+      "id": "native_identity",
+      "status": "partial",
+      "implemented": "OTP/session/CSRF/profile/email-change/moderation/support and explicit native-only API authority",
+      "remaining": "Native browser/admin auth client and full authority/client/organization-hook retirement of Better Auth; retained-store deletion"
+    },
+    {
+      "id": "google_sign_in",
+      "status": "retired",
+      "decision": "docs/architecture/decisions/0008-native-identity-email-otp-cutover.md",
+      "note": "User explicitly selected disabling Google at the first native authority cutover; not a Google OAuth parity claim"
+    },
+    {
+      "id": "membership_invitations",
+      "status": "partial",
+      "implemented": "Native tenant-fenced membership/ownership plus signed invitation create/cancel/accept, expiry/idempotency and durable delivery",
+      "remaining": "Full original client and public invitation-info/handoff compatibility migration; original organization hooks"
+    },
+    {
+      "id": "projects",
+      "status": "partial",
+      "implemented": "Atomic native create/list/onboarding and rich starter publication",
+      "remaining": "Project detail/update/theme/settings/delete and legacy client contracts"
+    },
+    {
+      "id": "draft_content",
+      "status": "partial",
+      "implemented": "Native create/list/get and optimistic revision updates in default branch",
+      "remaining": "Deletion/move/reorder/duplication/navigation plus complete client contracts"
+    },
+    {
+      "id": "languages_versions",
+      "status": "missing",
+      "remaining": "Tenant-scoped locale/version management, defaults, enablement, translations and concurrency behavior"
+    },
+    {
+      "id": "comments",
+      "status": "missing",
+      "remaining": "Comment threads, anchors, edits/deletion and access contracts"
+    },
+    {
+      "id": "publishing",
+      "status": "partial",
+      "implemented": "Typed immutable source-2 capture, leased native search and READY ordering",
+      "remaining": "Full checks/rendering/assets/rollback/notification/client migration"
+    },
+    {
+      "id": "public_delivery",
+      "status": "missing",
+      "remaining": "Site/page/Markdown/OpenAPI/redirect/assets/sitemap/robots/llms/changelog compatibility and selected snapshot adapter"
+    },
+    {
+      "id": "reader_lifecycle",
+      "status": "partial",
+      "implemented": "Fresh public/workspace/reader cookie admission, exact grants and scoped queries",
+      "remaining": "Native admin readers/audiences/grants, invitations/activation, JWT/JWKS/replay and browser handoff"
+    },
+    {
+      "id": "search",
+      "status": "partial",
+      "implemented": "Bounded lexical native member/public query, scoped BM25, explicit BFF/UI, immutable relational object target/reference, owned conditional S3 publish/verify/READY, replica-local single-flight/LRU/catalog and local S3 signed-wire/fault proof",
+      "remaining": "Real multi-host/provider qualification and SLOs, complete remote/local/backup retirement/erasure and failure/maintenance coverage, full delivery migration and reviewed removal of old engines"
+    },
+    {
+      "id": "dense_answer_search",
+      "status": "retired",
+      "decision": "docs/architecture/decisions/0013-project-scoped-tantivy-lindera-search.md",
+      "note": "No embeddings/vector/LLM answer runtime; not retirement of unrelated authoring/translation AI"
+    },
+    {
+      "id": "raw_search_term_analytics",
+      "status": "retired",
+      "decision": "docs/architecture/decisions/0017-public-search-contract-and-ranking-privacy.md",
+      "note": "Native aggregate operational metrics only, no raw-term/project dashboard feed"
+    },
+    {
+      "id": "assets_storage",
+      "status": "missing",
+      "remaining": "Native ownership/key/upload/download contracts, provider adapter, known-write intents/fences and versioned/locked-store behavior"
+    },
+    {
+      "id": "exports_schedules",
+      "status": "missing",
+      "remaining": "Native schedule/render/artifact lifecycle, retries, cancellation and retention with verified provider effects"
+    },
+    {
+      "id": "domains",
+      "status": "missing",
+      "remaining": "Native ingress/custom provider domain verification/TLS/edge contracts; fail-closed provider-managed erasure blockers"
+    },
+    {
+      "id": "analytics_usage_billing",
+      "status": "missing",
+      "remaining": "Preserve analytics/privacy/usage/checkpoint/billing records and intentional contract migration; no excluded retained-store erasure claim"
+    },
+    {
+      "id": "api_keys_mcp",
+      "status": "missing",
+      "remaining": "Complete native hashing/scopes/rotation/revocation/audit and MCP protocol/client parity"
+    },
+    {
+      "id": "git_imports_webhooks",
+      "status": "missing",
+      "remaining": "Native retained product behavior and integration security; excluded provider cleanup is not deletion permission"
+    },
+    {
+      "id": "openapi_integrations",
+      "status": "missing",
+      "remaining": "Native import/storage/editor/provider credential and confirmation/idempotency contracts"
+    },
+    {
+      "id": "ai_authoring_translation",
+      "status": "missing",
+      "remaining": "Characterize/port original authoring and translation behavior; not implicitly retired with semantic search"
+    },
+    {
+      "id": "notifications_addons_workspace_admin",
+      "status": "partial",
+      "implemented": "Native platform moderation/support primitives",
+      "remaining": "Complete notifications/addons/workspace/settings/admin and original activation/meta surfaces"
+    },
+    {
+      "id": "tenant_erasure",
+      "status": "partial",
+      "implemented": "Native fail-closed sole-tenant deletion, safe shared departure, immutable retained artifact/location evidence and pre-effect legacy tenant/account deletion block after native schema expansion",
+      "remaining": "Durable cross-runtime/provider/replica writer/read fences, ambiguous effects, purge/retention receipts and final lifecycle"
+    },
+    {
+      "id": "multi_host_operations",
+      "status": "partial",
+      "implemented": "Native S3 worker/API artifact pipeline, private unshared cache ownership, bounded single-flight/eviction, retained location catalog, local crash/restart/corruption/revocation/deadline and signed S3 protocol proof",
+      "remaining": "Real hosts/provider durability/versioning/lock qualification, complete artifact/replica/backup retention and offline retirement, broader operations/failure/reconciliation/restore"
+    },
+    {
+      "id": "backup_restore_release",
+      "status": "partial",
+      "implemented": "Local verified new-root rebuild; scoped native release/fixture DB+artifact rehearsal work",
+      "remaining": "Complete real data-location/provider backup coverage, online consistency, restore/replay approvals, production SLOs and deployment qualification"
+    }
+  ]
+}

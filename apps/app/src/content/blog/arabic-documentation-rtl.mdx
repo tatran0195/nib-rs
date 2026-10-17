@@ -1,0 +1,159 @@
+---
+title: 'Arabic documentation and RTL: a practical implementation guide'
+metaTitle: 'Arabic documentation and RTL: a practical guide | Nibleaf'
+description: 'A practical guide to RTL layout, bidirectional code, Arabic search, language trees, hreflang, and typography for product documentation.'
+datePublished: '2026-07-13'
+dateModified: '2026-09-03'
+tags: ['arabic', 'rtl', 'i18n']
+related: ['arabic-technical-documentation-rtl-checklist', 'open-source-documentation-tools', 'self-host-documentation-site-docker-compose']
+translationOf: 'arabic-technical-documentation-rtl-checklist'
+readingMinutes: 7
+faqs:
+  - question: 'Why can Arabic documentation search miss a word that is on the page?'
+    answer: 'An English tokenizer can drop Arabic text entirely. Nibleaf selects Orama’s Arabic tokenizer, normalizes common spelling variants, and applies conservative light morphology to prefixes, attached pronouns, and common plural or dual forms while preserving exact tokens.'
+  - question: 'Does Docusaurus support Arabic and RTL layouts?'
+    answer: 'Yes. Docusaurus supports an RTL direction per locale and builds each locale separately. Search, fonts, and the editing workflow still need to be chosen and tested for Arabic.'
+  - question: 'Should Arabic docs mirror the English page tree one to one?'
+    answer: 'Not necessarily. An Arabic section can begin with the pages its readers need most. A per-language tree lets each version grow independently while hreflang connects the pages that correspond.'
+  - question: 'Which hreflang code should Arabic documentation use?'
+    answer: 'Use ar unless the content is genuinely specific to a region. Each alternate must include itself and its counterpart, and x-default can identify the fallback for unmatched users.'
+---
+
+Turning on `dir="rtl"` is the quick part. The useful test comes next: put an option such as `-d`, a path, and a version number inside an Arabic sentence, then search for a word with and without its hamza.
+
+Those two tests expose many defects that a translated landing page will not. This guide covers the layout, bidirectional text, search, language-tree, `hreflang`, and typography checks we use in Nibleaf. You can apply the same checks to another documentation stack.
+
+## Use logical CSS properties
+
+Physical CSS properties encode a side. Logical properties encode the start or end of a line and adapt to the document direction.
+
+```css
+/* Fixed to the left */
+.nav-item {
+  margin-left: 12px;
+  border-left: 2px solid var(--accent);
+}
+
+/* Adapts to LTR and RTL */
+.nav-item {
+  margin-inline-start: 12px;
+  border-inline-start: 2px solid var(--accent);
+}
+```
+
+The same principle applies to padding, positioning, alignment, borders, and corner radii. Tailwind has included logical utilities such as `ms-*`, `me-*`, `ps-*`, `pe-*`, `start-*`, and `end-*` since v3.3.
+
+Directional icons require a separate decision. A next-page arrow should flip with the interface. A logo, screenshot, or icon that depicts a physical object should not be mirrored automatically.
+
+## Isolate LTR code inside RTL prose
+
+Arabic technical writing mixes two directions. The sentence runs right-to-left, while commands, paths, flags, identifiers, and version numbers run left-to-right. Characters such as `-`, `/`, and `.` can take their visual placement from the surrounding text.
+
+[Unicode UAX #9](https://www.unicode.org/reports/tr9/) defines isolation for keeping the inner and outer directional runs from affecting each other. Apply an explicit direction and isolation to inline code, and keep code blocks left-aligned:
+
+```css
+.docs-content :not(pre) > code {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.docs-content pre {
+  direction: ltr;
+  text-align: left;
+}
+```
+
+Test the same mixed sentence in both the editor and the published reader. Then copy the command into a terminal. Visual order and copy behavior both matter.
+
+Nibleaf now applies this rule to inline and block code in the reader and the editor. Regression tests should still keep a mixed Arabic, path, and command sample because bidi defects are easy to reintroduce with a styling change.
+
+## Separate Arabic tokenization from normalization
+
+An English-default tokenizer can drop Arabic text entirely. Selecting an Arabic tokenizer solves that first problem, but it does not make every spelling or inflected form equivalent.
+
+Useful spelling tests include:
+
+| Page text | Query | Difference |
+| --- | --- | --- |
+| الإعدادات | الاعدادات | alef with hamza |
+| إِعْدادات | إعدادات | diacritics |
+| التحكــم | التحكم | tatweel |
+| إلى | الي | alef maqsura and ya |
+
+Nibleaf uses Orama's Arabic tokenizer. It also applies conservative normalization to indexed text and queries: diacritics and tatweel are removed, common alef forms are folded, and alef maqsura is folded to ya.
+
+The implementation deliberately does not fold ta marbuta `ة` into ha `ه`. They are different letters, and merging them can change the words returned. A separate conservative morphology field removes a bounded set of common conjunction, preposition, definite-article, attached-pronoun, plural, and dual affixes. That lets `مستخدم` match `للمستخدمين` without applying aggressive root extraction.
+
+Original normalized tokens remain in higher-weight exact fields, while morphology-only hits use lower boosts. Short words, code, mixed Arabic/Latin identifiers, and reviewed ambiguous words are protected. This improves documentation recall, but it is still a light search analyzer rather than a full dictionary lemmatizer: uncommon broken plurals, dialectal forms, and many verb conjugations can remain distinct.
+
+## Let each language tree reflect reader needs
+
+An Arabic documentation section often begins with installation, quickstart, and common support tasks rather than a complete translation of the English tree. Forcing a mirrored folder can leave the team with stubs or stale pages.
+
+Nibleaf gives each language its own page tree and connects corresponding pages through translation keys. An English `/getting-started` page and an Arabic `/البدء` page can be paired without sharing a slug or position.
+
+This is a product choice, not a universal rule. A docs-as-code team may prefer mirrored locale directories because that fits its review and build process. The [Nibleaf and Docusaurus comparison](/compare/nibleaf-vs-docusaurus) describes that workflow trade-off.
+
+## Make canonical and hreflang signals agree
+
+Google may discover translated pages without `hreflang`, and fully translated pages are not duplicates simply because they cover the same subject. Explicit alternates still help Google choose the suitable language URL.
+
+```html
+<html lang="ar" dir="rtl">
+<link rel="canonical" href="https://docs.example.com/ar/deploy" />
+<link rel="alternate" hreflang="ar" href="https://docs.example.com/ar/deploy" />
+<link rel="alternate" hreflang="en" href="https://docs.example.com/en/deploy" />
+<link rel="alternate" hreflang="x-default" href="https://docs.example.com/en/deploy" />
+```
+
+[Google's localized-page guidance](https://developers.google.com/search/docs/specialty/international/localized-versions) requires each listed version to reference itself and its counterpart. Alternate links must be reciprocal to be processed. Google recommends `x-default` for users whose language does not match another alternate.
+
+Use generic `ar` unless the page is genuinely specific to a region. Also verify `lang`, `dir`, the canonical, `og:locale`, and structured data in the server response. Changing them only after JavaScript runs is too late for a reliable SSR implementation.
+
+Nibleaf emits alternates for pages that have an actual linked translation. It should not advertise a missing or non-indexable sibling.
+
+## Test the real Arabic font stack
+
+Arabic letters change shape according to their position. A Latin font without Arabic coverage can fall back silently to a system font, producing a different weight, baseline, and apparent size inside one sentence.
+
+Build a small font specimen with:
+
+- a long heading with diacritics;
+- Arabic and English in the same paragraph;
+- every weight used by the interface;
+- a table, list, link, and inline code sample.
+
+Open it on the operating systems and phones your readers use. Set line height from that test rather than copying a fixed ratio. Remove `letter-spacing` and `text-transform` from Arabic headings because tracking can break the visual connection between letters.
+
+## Test the failure modes around language, URLs, and mobile
+
+Create explicit query judgments rather than declaring that Arabic search “works.” For each reader task, list exact, acceptable, and irrelevant document IDs. Include prefixes and attached pronouns, duals and plurals, spelling variants, diacritics, Arabic-Indic and Western digits, error codes, and mixed identifiers such as `API_v2` or `user_id`. Compare exact-token and morphology-assisted results so normalization gains do not hide precision regressions.
+
+Privacy-safe no-result analysis should aggregate bounded query categories or reviewed redacted terms. Do not store raw queries that can contain names, tokens, customer data, or incident details merely to improve recall. Missing telemetry is unknown, not evidence of a zero no-result rate.
+
+Round-trip Arabic slugs through authoring, URL encoding, routing, canonical generation, sitemap output, clipboard copy, redirects, and server logs. Assert that decoding produces the intended Unicode string once—not mojibake and not a double-decoded path. Pair translations by a stable content key, not by assuming identical slugs.
+
+Define stale-translation behavior. A materially changed English page may keep an older Arabic version visible with a dated warning, fall back to English with an explicit language change, or become unavailable until reviewed. It must not silently present stale Arabic as current or advertise a missing sibling through `hreflang`.
+
+On mobile, test 200% zoom, reflow, menu and language-switch focus, touch targets, headings, landmarks, screen-reader language changes, code scrolling, long URLs, and reduced motion. Directionally correct pixels do not prove accessible order or announcements.
+
+## A release checklist
+
+Use the checked-in [Arabic search corpus](/guides/fixtures/arabic-search-corpus.json) with its [labeled queries](/guides/fixtures/arabic-search-queries.json) before adding project-specific cases. The expected document IDs are relevance judgments, not published benchmark scores. Add your ten highest-value reader queries, preserve mixed Arabic/Latin product names and error codes, then report the tokenizer, configuration, corpus revision, and evaluation date.
+
+Repeat the query set after every tokenizer or ranking change. A missing provider, metric, or production sample stays unknown; it is not a zero-result rate.
+
+Before shipping an Arabic documentation section, verify:
+
+- `html` has the correct `lang` and `dir` in the initial response.
+- Inline code and code blocks remain LTR in reader and editor.
+- Directional icons, breadcrumbs, and pagination move correctly.
+- Search covers the spelling variants your readers use.
+- Arabic has a deliberate font in every required weight.
+- Paired pages publish reciprocal `hreflang` and consistent canonicals.
+- Arabic pages declare Arabic in Open Graph and Article structured data.
+- The Arabic tree can grow without placeholder translations.
+
+Nibleaf currently provides per-language trees, RTL layout, inline-code isolation, Arabic tokenization with spelling normalization and conservative light morphology, `hreflang`, and an English and Arabic interface. The morphology deliberately favors precision over exhaustive linguistic coverage, and it cannot repair inconsistent terminology or weak translations.
+
+For an Arabic version of this checklist, read [كيف تنشر وثائق منتج بالعربية](/blog/arabic-technical-documentation-rtl-checklist). You can also run the HTML through the private, browser-only [RTL documentation readiness grader](/tools/rtl-documentation-readiness), [start on the hosted beta](/sign-up), or follow the public [self-hosting guide](/self-hosting).

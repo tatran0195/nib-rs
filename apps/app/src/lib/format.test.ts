@@ -1,0 +1,65 @@
+import { describe, expect, it } from 'vitest';
+import { formatCurrency, localeTag, viewsTrend } from './format';
+
+const series = (...views: number[]) => views.map((v, i) => ({ date: `d${i}`, views: v }));
+
+describe('viewsTrend', () => {
+  it('returns null with too few points to compare', () => {
+    expect(viewsTrend([])).toBeNull();
+    expect(viewsTrend(series(1, 2, 3))).toBeNull();
+  });
+
+  it('reports an upward trend (recent half greater than older half)', () => {
+    // older = 1+1 = 2, recent = 3+3 = 6 → +200%
+    const t = viewsTrend(series(1, 1, 3, 3));
+    expect(t?.direction).toBe('up');
+    expect(t?.pct).toBeCloseTo(200);
+  });
+
+  it('reports a downward trend', () => {
+    // older = 10+10 = 20, recent = 5+5 = 10 → -50%
+    const t = viewsTrend(series(10, 10, 5, 5));
+    expect(t?.direction).toBe('down');
+    expect(t?.pct).toBeCloseTo(-50);
+  });
+
+  it('reports flat when within ±1%', () => {
+    const t = viewsTrend(series(100, 100, 100, 100));
+    expect(t?.direction).toBe('flat');
+    expect(t?.pct).toBe(0);
+  });
+
+  it('handles a zero older half without dividing by zero', () => {
+    const t = viewsTrend(series(0, 0, 5, 5));
+    expect(t).toEqual({ pct: 100, direction: 'up' });
+  });
+
+  it('returns null when there is no traffic at all', () => {
+    expect(viewsTrend(series(0, 0, 0, 0))).toBeNull();
+  });
+});
+
+describe('localeTag', () => {
+  it('requests Western digits for Arabic and passes other locales through', () => {
+    expect(localeTag('ar')).toBe('ar-u-nu-latn');
+    expect(localeTag('ar-SA')).toBe('ar-SA-u-nu-latn');
+    expect(localeTag('en')).toBe('en');
+    expect(localeTag('fr')).toBe('fr');
+  });
+});
+
+describe('formatCurrency', () => {
+  it('formats a whole amount without trailing cents', () => {
+    expect(formatCurrency('en', 0)).toBe('$0');
+    expect(formatCurrency('en', 12)).toBe('$12');
+  });
+
+  it('keeps cents for fractional amounts', () => {
+    expect(formatCurrency('en', 9.5)).toBe('$9.50');
+  });
+
+  it('uses Western digits under the Arabic tag', () => {
+    expect(formatCurrency(localeTag('ar'), 0)).toContain('0');
+    expect(formatCurrency(localeTag('ar'), 0)).not.toMatch(/[٠-٩]/);
+  });
+});

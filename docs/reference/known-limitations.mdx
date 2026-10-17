@@ -1,0 +1,125 @@
+---
+title: 'Known limitations and product boundaries'
+description: 'Evaluate Nibleaf honestly against beta operations, identity, Git workflows, API portals, exports, private readers, and search requirements.'
+audience: 'technical evaluators, operators, and documentation leads'
+content_type: 'reference'
+last_reviewed: '2026-08-24'
+verified_against: 'README.md, apps/app/src/lib/comparison-data.ts, and current main branch'
+lang: 'en'
+dir: 'ltr'
+translation_key: 'reference/known-limitations'
+---
+
+Nibleaf is pre-1.0. Capability depends on the release you deploy, and `main` can
+contain features that are not in the latest GHCR release. Verify a required
+workflow against the exact tag before committing a production migration.
+
+## Identity and service commitments
+
+Nibleaf Cloud is a free beta and does not currently promise enterprise uptime
+or public-support response times. Export critical content and keep an operational
+fallback.
+
+Passwordless email one-time codes and Google OAuth are available. Password login
+and password-reset links are intentionally not part of the current identity model.
+SAML and a general enterprise SSO offering are not. Do not infer an identity
+compliance claim from the presence of OAuth or private-site controls.
+
+## Content and Git authority
+
+Nibleaf stores active page Markdown and navigation in Postgres. Markdown is the
+portable serialization format, but a database-backed project is not automatically
+a Git directory. Bidirectional authoring currently targets GitHub and uses a
+dedicated branch, draft pull request, and explicit conflict reconciliation.
+Public GitHub and GitLab repositories can still serve one-way import and
+repository-backed OpenAPI workflows.
+
+The Mintlify importer reads a public GitHub source repository, not a hosted
+Mintlify Cloud editor URL. Each run creates at most 500 navigation nodes,
+including groups and pages. Larger sources need an explicit split-and-reconcile
+plan; a successful import summary is not proof that the original site is at or
+below the boundary.
+
+Before using a Git-centered workflow, test pull, push, conflict reconciliation,
+branch protection, and preview behavior with the same provider and repository
+shape you will use. Name one authoritative source and document recovery when
+both sides change.
+
+## API reference boundaries
+
+The platform server publishes its own OpenAPI reference. A project can publish
+one OpenAPI 3.x document from upload/paste, a safe public URL, or a connected
+public GitHub/GitLab repository. Public external `$ref` files are bundled with
+strict count, size, timeout, redirect, and network-destination bounds. Relative
+references require a URL or repository source; uploads can use absolute public
+HTTP(S) references. A server-side try-it proxy is not provided. Test one
+representative specification, large schemas, code samples, mobile navigation,
+keyboard use, CORS, authentication, and the browser try-it path before choosing
+Nibleaf for an API-first portal.
+
+Never publish live credentials inside an OpenAPI example. A reader-side try-it
+request also depends on the documented API accepting the documentation origin.
+
+## Operations and recovery
+
+Self-hosting moves DNS, TLS, databases, queues, object storage, email, backups,
+monitoring, upgrades, and incident response to the operator. The Compose stack
+is a deployment starting point, not a managed-service commitment.
+
+Application snapshots protect readers from half-written drafts. They are not a
+replacement for synchronized Postgres and object-storage backups.
+
+Portable exports start from the latest `READY` deployment and cover Markdown,
+PDF, or static HTML. They do not preserve drafts, workspace identities, comments,
+analytics, credentials, or the rest of the database. PDF export also requires a
+Chromium-compatible browser in the worker image.
+
+## Search and multilingual behavior
+
+Nibleaf retains the legacy full-text/fuzzy runtime as an immediate rollback, and
+the current source also includes tenant-safe hybrid retrieval plus optional
+grounded answers. Hybrid search requires Qdrant and an embedding provider; the
+legacy runtime does not. Keep `SEARCH_RUNTIME=shadow` until project-, version-,
+language-, and authorization-scoped evaluation supports a cutover. No benchmark
+or provider result is implied by the presence of the implementation.
+
+Language-specific tokenization, Arabic normalization, and conservative light
+morphology improve matching but do not guarantee that every inflected,
+synonymous, dialectal, or ambiguous term resolves to the intended page. A
+grounded answer is withheld when evidence is insufficient. Build acceptance
+queries from real reader vocabulary and retain the tested legacy rollback.
+
+Each language has an independent page tree. Nibleaf does not translate source
+content automatically or guarantee parity between languages. The Languages
+settings report default-branch coverage using explicit translation keys and the
+same-path fallback used by published `hreflang`; operators still own translation
+quality and cutover parity.
+
+## Capability and integration boundaries
+
+Usage metering is provider-neutral and does not enable billing or payments.
+Coverage may be complete, partial, or unavailable; missing evidence must not be
+displayed as zero. Entitlements and meter limits remain advisory in this source
+capability set.
+
+Add-ons expose reader actions, consent controls, previews, and local publish
+checks. The grammar linter is a preview-quality bounded check, not a general
+proofreading or writing-quality service. A project entitlement can make an
+add-on unavailable even when it appears in the catalog.
+
+An integration catalog entry is discovery metadata, not proof that a provider
+runtime, credential, or external account is available. Configurable credentials
+are encrypted with a dedicated operator-managed key. Provider-visible tests and
+destructive deletion require explicit actions and safe confirmation boundaries.
+
+The HTTP MCP endpoint is disabled by default and project-bound. Its new-domain
+adapters are read-only; it cannot publish, reindex, export usage, accept provider
+credentials, or mutate add-ons, themes, usage, search, or integrations. Theme
+import preview validates a template without writing project state.
+
+## Report a blocking gap
+
+Search the public issue tracker before filing a report. Include the release tag
+and digest, deployment type, expected result, actual result, and a minimal
+reproduction. Remove secrets, customer content, private hostnames, and tokens.
+Report vulnerabilities privately through the repository's `SECURITY.md` path.

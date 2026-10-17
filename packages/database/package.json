@@ -1,0 +1,51 @@
+{
+  "name": "@nibleaf/database",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./src/index.ts"
+    },
+    "./keys": {
+      "types": "./dist/keys.d.mts",
+      "default": "./src/keys.ts"
+    }
+  },
+  "scripts": {
+    "build": "pnpm generate && tsdown",
+    "with-env": "dotenv -e ../../.env --",
+    "generate": "prisma generate",
+    "migrate:dev": "pnpm with-env prisma migrate dev",
+    "migrate:deploy": "pnpm with-env prisma migrate deploy",
+    "smoke:addons-migration": "tsx ./scripts/addons-migration-smoke.ts",
+    "smoke:integrations-migration": "tsx ./scripts/integrations-migration-smoke.ts",
+    "smoke:mcp-migration": "tsx ./scripts/mcp-migration-smoke.ts",
+    "push": "pnpm with-env prisma db push",
+    "smoke": "tsx ./scripts/runtime-smoke.ts",
+    "studio": "pnpm with-env prisma studio",
+    "clean": "git clean -xdf .cache .turbo dist node_modules src/generated",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@t3-oss/env-core": "^0.13.11",
+    "@nibleaf/usage": "workspace:*",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@nibleaf/tsconfig": "workspace:*",
+    "@nibleaf/validators": "workspace:*",
+    "@types/node": "^22.20.1",
+    "dotenv-cli": "^11.0.0",
+    "prisma": "7.10.0",
+    "tsx": "4.23.13",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

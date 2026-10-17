@@ -1,0 +1,282 @@
+name: nibleaf
+
+# Full self-hosted Nibleaf stack, BUILT FROM SOURCE. Quick start:
+#   cp .env.example .env   # (optional — sensible defaults below)
+#   docker compose up -d --build
+# Then open http://localhost:4310.
+#
+# ⚠ RAM WARNING: building the whole monorepo in-container needs ~5–6 GB of
+# free RAM and will OOM small VPSes. For production self-hosting, use the
+# pull-based docker-compose.prod.yml instead (recommended) — it pulls the
+# prebuilt image from ghcr.io/lord007tn/nibleaf and needs no build at all.
+#
+# For production: set strong POSTGRES_PASSWORD / STORAGE_SECRET_ACCESS_KEY /
+# BETTER_AUTH_SECRET and put the apps behind a TLS reverse proxy.
+# Cache = Dragonfly (Redis-compatible); object storage = maxio (S3-compatible).
+
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+  target: runner
+  args:
+    VITE_API_URL: http://server:4311
+    VITE_APP_URL: ${APP_URL:-http://localhost:4310}
+    VITE_SITE_BASE_DOMAIN: ${SITE_BASE_DOMAIN:-docs.nibleaf.com}
+
+# Interpolation reads the canonical .env names used by `pnpm dev` and
+# .env.production.example.
+x-service-env: &service-env
+  NODE_ENV: production
+  PINO_LOG_LEVEL: ${PINO_LOG_LEVEL:-info}
+  PINO_LOG_FILE: ${PINO_LOG_FILE:-}
+  POSTGRES_URL: postgresql://nibleaf:${POSTGRES_PASSWORD:-nibleaf}@postgres:5432/nibleaf
+  REDIS_HOST: dragonfly
+  REDIS_PORT: "6379"
+  ANALYTICS_MODE: ${ANALYTICS_MODE:-dual_write}
+  ANALYTICS_HASH_SALT: ${ANALYTICS_HASH_SALT:-local-analytics-salt-change-in-production}
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-nibleaf_analytics}
+  CLICKHOUSE_READER_USERNAME: ${CLICKHOUSE_USERNAME:-nibleaf}
+  CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_PASSWORD:-nibleaf}
+  CLICKHOUSE_WRITER_USERNAME: ${CLICKHOUSE_USERNAME:-nibleaf}
+  CLICKHOUSE_WRITER_PASSWORD: ${CLICKHOUSE_PASSWORD:-nibleaf}
+  QUEUE_CLUSTER: "true"
+  STORAGE_PROVIDER: ${STORAGE_PROVIDER:-maxio}
+  # Fixed to the bundled maxio service — a host .env's STORAGE_ENDPOINT (the
+  # `pnpm dev` localhost value) must NOT leak into the containers. Bringing
+  # your own R2/S3? Use docker-compose.prod.yml, which reads STORAGE_ENDPOINT.
+  STORAGE_ENDPOINT: http://maxio:9000
+  STORAGE_PUBLIC_ENDPOINT: ${STORAGE_PUBLIC_ENDPOINT:-http://localhost:9300}
+  STORAGE_REGION: ${STORAGE_REGION:-auto}
+  STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-nibleafadmin}
+  STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-nibleafadmin123}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-nibleaf}
+  STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-true}
+  STORAGE_PUBLIC_URL: ${STORAGE_PUBLIC_URL:-http://localhost:9300/nibleaf}
+  STORAGE_CORS_ALLOWED_ORIGINS: ${STORAGE_CORS_ALLOWED_ORIGINS:-${APP_URL:-http://localhost:4310}}
+  STORAGE_AUTO_CORS: ${STORAGE_AUTO_CORS:-true}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-change-me-in-production-32chars-minimum}
+  BETTER_AUTH_URL: ${APP_URL:-http://localhost:4310}
+  TRUSTED_ORIGINS: ${APP_URL:-http://localhost:4310}
+  CORS_ALLOWED_ORIGINS: ${APP_URL:-http://localhost:4310}
+  MCP_ENABLED: ${MCP_ENABLED:-false}
+  MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+  MCP_RATE_LIMIT_PER_MIN: ${MCP_RATE_LIMIT_PER_MIN:-120}
+  API_PORT: "4311"
+  API_URL: http://server:4311
+  APP_URL: ${APP_URL:-http://localhost:4310}
+  MARKETING_GTM_ID: ${MARKETING_GTM_ID:-}
+  MARKETING_GA4_ID: ${MARKETING_GA4_ID:-}
+  SITE_BASE_DOMAIN: ${SITE_BASE_DOMAIN:-}
+  CUSTOM_DOMAIN_CNAME_TARGET: ${CUSTOM_DOMAIN_CNAME_TARGET:-cname.docs.nibleaf.com}
+  CUSTOM_DOMAIN_PROVIDER: ${CUSTOM_DOMAIN_PROVIDER:-ingress}
+  CLOUDFLARE_SAAS_ZONE_ID: ${CLOUDFLARE_SAAS_ZONE_ID:-}
+  CLOUDFLARE_SAAS_API_TOKEN: ${CLOUDFLARE_SAAS_API_TOKEN:-}
+  CLOUDFLARE_SAAS_WORKER_SCRIPT: ${CLOUDFLARE_SAAS_WORKER_SCRIPT:-nibleaf-custom-domain-edge}
+  CUSTOM_DOMAIN_EDGE_SECRET: ${CUSTOM_DOMAIN_EDGE_SECRET:-}
+  WORKER_PORT: "4312"
+  # Email delivery (optional). Postmark is preferred when POSTMARK_API_KEY is set;
+  # SMTP_URL remains a fallback. This local quick-start keeps delivery optional.
+  EMAIL_FROM: ${EMAIL_FROM:-nibleaf@localhost}
+  POSTMARK_API_KEY: ${POSTMARK_API_KEY:-}
+  POSTMARK_MESSAGE_STREAM: ${POSTMARK_MESSAGE_STREAM:-}
+  SMTP_URL: ${SMTP_URL:-}
+  EMAIL_DELIVERY_REQUIRED: ${EMAIL_DELIVERY_REQUIRED:-false}
+  # Basic auth for the worker's BullMQ dashboard at :4312/jobs. Set BOTH —
+  # this compose file publishes the worker port, and without credentials the
+  # dashboard is UNAUTHENTICATED.
+  WORKBENCH_USER: ${WORKBENCH_USER:-}
+  WORKBENCH_PASS: ${WORKBENCH_PASS:-}
+  GIT_CREDENTIAL_ENCRYPTION_KEY: ${GIT_CREDENTIAL_ENCRYPTION_KEY:-}
+  INTEGRATION_CREDENTIAL_ENCRYPTION_KEY: ${INTEGRATION_CREDENTIAL_ENCRYPTION_KEY:-}
+  INTEGRATION_CREDENTIAL_PREVIOUS_KEYS: ${INTEGRATION_CREDENTIAL_PREVIOUS_KEYS:-}
+  INTEGRATION_CONFIRMATION_TTL_SECONDS: ${INTEGRATION_CONFIRMATION_TTL_SECONDS:-300}
+  INTEGRATION_CONFIRMATION_RETENTION_HOURS: ${INTEGRATION_CONFIRMATION_RETENTION_HOURS:-24}
+  INTEGRATION_IDEMPOTENCY_TTL_HOURS: ${INTEGRATION_IDEMPOTENCY_TTL_HOURS:-24}
+  GIT_WORKER_SECRET: ${GIT_WORKER_SECRET:-}
+  GIT_CONCURRENCY: ${GIT_CONCURRENCY:-2}
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_COLLECTION_ALIAS: ${QDRANT_COLLECTION_ALIAS:-nibleaf_search_active}
+  QDRANT_COLLECTION_VERSION: ${QDRANT_COLLECTION_VERSION:-v1}
+  QDRANT_VECTOR_SIZE: ${SEARCH_EMBEDDING_DIMENSIONS:-1536}
+  SEARCH_RUNTIME: ${SEARCH_RUNTIME:-shadow}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-openai/text-embedding-3-small}
+  SEARCH_EMBEDDING_DIMENSIONS: ${SEARCH_EMBEDDING_DIMENSIONS:-1536}
+  SEARCH_ANSWER_ENABLED: ${SEARCH_ANSWER_ENABLED:-false}
+  SEARCH_ANSWER_MODEL: ${SEARCH_ANSWER_MODEL:-openai/gpt-5.6-luna}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nibleaf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nibleaf}
+      POSTGRES_DB: nibleaf
+    volumes:
+      - nibleaf-pg:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5442}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nibleaf -d nibleaf"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Dragonfly — Redis-compatible queue backend for BullMQ. Queue names are
+  # hash-tagged by default, so Dragonfly can keep BullMQ keys grouped.
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0
+    restart: unless-stopped
+    command: ["dragonfly", "--cluster_mode=emulated", "--lock_on_hashtags"]
+    ulimits:
+      memlock: -1
+    volumes:
+      - nibleaf-dragonfly:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
+    volumes:
+      - nibleaf-qdrant:/qdrant/storage
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-nibleaf_analytics}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME:-nibleaf}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-nibleaf}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - nibleaf-clickhouse:/var/lib/clickhouse
+      - nibleaf-clickhouse-logs:/var/log/clickhouse-server
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # maxio — S3-compatible object storage. Auto-creates the bucket
+  # (MAXIO_DEFAULT_BUCKETS) and serves it with anonymous read (MAXIO_PUBLIC_BUCKETS)
+  # so published doc assets load by their public URL. Console at /ui/.
+  maxio:
+    image: docker.io/coollabsio/maxio:0.4.2
+    restart: unless-stopped
+    environment:
+      MAXIO_ACCESS_KEY: ${STORAGE_ACCESS_KEY_ID:-nibleafadmin}
+      MAXIO_SECRET_KEY: ${STORAGE_SECRET_ACCESS_KEY:-nibleafadmin123}
+      MAXIO_REGION: auto
+      MAXIO_DEFAULT_BUCKETS: nibleaf
+      MAXIO_PUBLIC_BUCKETS: nibleaf
+      MAXIO_ALLOW_INSECURE_DEV: "true"
+    volumes:
+      - nibleaf-maxio:/data
+    ports:
+      - "${MAXIO_PORT:-9300}:9000"
+    healthcheck:
+      test: ["CMD", "maxio", "healthcheck", "--url", "http://127.0.0.1:9000/healthz", "--timeout-ms", "2000"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    image: nibleaf:latest
+    command: ["migrate"]
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  analytics-migrate:
+    image: nibleaf:latest
+    command: ["clickhouse-migrate"]
+    environment: *service-env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    build: *build
+    image: nibleaf:latest
+    command: ["server"]
+    init: true
+    environment: *service-env
+    ports:
+      - "${API_PORT:-4311}:4311"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4311/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  worker:
+    image: nibleaf:latest
+    command: ["worker"]
+    init: true
+    environment: *service-env
+    ports:
+      - "${WORKER_PORT:-4312}:4312"
+    depends_on:
+      dragonfly:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4312/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  app:
+    image: nibleaf:latest
+    command: ["app"]
+    init: true
+    environment:
+      <<: *service-env
+      PORT: "4310"
+    ports:
+      - "${APP_PORT:-4310}:4310"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4310/sign-in"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  nibleaf-pg:
+  nibleaf-dragonfly:
+  nibleaf-qdrant:
+  nibleaf-maxio:
+  nibleaf-clickhouse:
+  nibleaf-clickhouse-logs:

@@ -1,0 +1,40 @@
+{
+  "name": "@nibleaf/auth",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./client": "./src/client.ts",
+    "./server": "./src/server.ts",
+    "./tenant-erasure": "./src/tenant-erasure.ts",
+    "./keys.server": "./src/keys.server.ts",
+    "./providers": "./src/providers.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nibleaf/bullmq": "workspace:*",
+    "@nibleaf/clickhouse": "workspace:*",
+    "@nibleaf/database": "workspace:*",
+    "@nibleaf/email": "workspace:*",
+    "@nibleaf/i18n": "workspace:*",
+    "@nibleaf/logger": "workspace:*",
+    "@nibleaf/shared": "workspace:*",
+    "@t3-oss/env-core": "^0.13.11",
+    "better-auth": "^1.7.2",
+    "zod": "^4.5.4"
+  },
+  "peerDependencies": {
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@nibleaf/tsconfig": "workspace:*",
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8",
+    "typescript": "^7.0.2"
+  }
+}

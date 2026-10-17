@@ -1,0 +1,48 @@
+import { errorResponses } from '@/errors/utils';
+import { createRouteConfig } from '@/lib/hono/route-config';
+
+const ok = { 200: { description: 'ok' }, ...errorResponses };
+const passthrough = (_: unknown, next: () => Promise<void>) => next();
+
+const sitesRoutes = {
+  site: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'Published site shell (branding + navigation).', responses: ok }),
+  page: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'A published page with TOC and neighbours.', responses: ok }),
+  markdown: createRouteConfig({
+    guard: passthrough,
+    tags: ['public'],
+    description: 'Public, indexable Markdown representation of one published page. Private and noindex content returns not found.',
+    responses: ok,
+  }),
+  openapi: createRouteConfig({
+    guard: passthrough,
+    tags: ['public'],
+    description: 'The validated OpenAPI document frozen in the latest published deployment.',
+    responses: ok,
+  }),
+  search: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'Search a published site (full-text + fuzzy).', responses: ok }),
+  answer: createRouteConfig({
+    guard: passthrough,
+    tags: ['public'],
+    description: 'Generate a tenant-scoped grounded answer with citations from the active published deployment.',
+    responses: ok,
+  }),
+  track: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'Record a pageview, search, or feedback event.', responses: ok }),
+  changelog: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'Published-version changelog for a site.', responses: ok }),
+  changelogRss: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'RSS 2.0 feed of published site releases.', responses: ok }),
+  sitemap: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'XML sitemap of a published site.', responses: ok }),
+  robots: createRouteConfig({ guard: passthrough, tags: ['public'], description: 'robots.txt for a published site.', responses: ok }),
+  llms: createRouteConfig({
+    guard: passthrough,
+    tags: ['public'],
+    description: 'llms.txt for a published site (llmstxt.org page index).',
+    responses: ok,
+  }),
+  llmsFull: createRouteConfig({
+    guard: passthrough,
+    tags: ['public'],
+    description: 'llms-full.txt for a published site (full page Markdown).',
+    responses: ok,
+  }),
+};
+
+export default sitesRoutes;

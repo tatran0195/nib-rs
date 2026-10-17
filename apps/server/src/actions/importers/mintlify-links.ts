@@ -1,0 +1,121 @@
+import { posix } from 'node:path';
+import { slugify } from '@nibleaf/shared';
+import { protectMarkdownCode } from '@nibleaf/shared/markdown-code';
+import { stableHash } from './content';
+import { type MintlifyLanguageNavigation, type NavNode, partitionMintlifyVersions } from './mintlify-mapping';
+
+const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\(([^\s)]+)((?:\s+["'][^)]*["'])?)\)/g;
+const HREF_ATTRIBUTE = /(\bhref\s*=\s*["'])([^"']+)(["'])/gi;
+
+const normalizedSourcePath = (value: string): string =>
+  posix
+    .normalize(
+      value
+        .replace(/^\/+/, '')
+        .replace(/\.(?:md|mdx)$/i, '')
+        .replace(/\/+$/, ''),
+    )
+    .replace(/^\.\//, '');
+
+/** Build the exact public route each Mintlify navigation page receives after
+ * its groups become Nibleaf GROUP pages. The sibling slug ledger mirrors the
+ * importer so basename collisions remain deterministic. */
+export const buildMintlifyRouteMap = (nodes: readonly NavNode[]): ReadonlyMap<string, string> => {
+  const routes = new Map<string, string>();
+  const visit = (items: readonly NavNode[], parentSegments: string[]) => {
+    const usedSlugs = new Map<string, string>();
+    for (const node of items) {
+      if (node.kind === 'group') {
+        const groupSlug = slugify(node.slug ?? node.title) || `group-${stableHash(node.title)}`;
+        visit(node.children, [...parentSegments, groupSlug]);
+        continue;
+      }
+      let leafSlug = slugify(node.path.split('/').pop() ?? node.path) || `page-${stableHash(node.path)}`;
+      const prior = usedSlugs.get(leafSlug);
+      if (prior && prior !== node.path) leafSlug = slugify(node.path) || `page-${stableHash(node.path)}`;
+      usedSlugs.set(leafSlug, node.path);
+      routes.set(normalizedSourcePath(node.path), `/${[...parentSegments, leafSlug].join('/')}`);
+    }
+  };
+  visit(nodes, []);
+  return routes;
+};
+
+/** Foreign navigation supplies destinations without copying translated pages
+ * into the current language. Keep version partitions aligned by name. */
+export const buildMintlifyLanguageRouteMap = (
+  languages: readonly MintlifyLanguageNavigation[],
+  currentLanguage: string | undefined,
+  versionName: string | undefined,
+): ReadonlyMap<string, string> => {
+  const routes = new Map<string, string>();
+  for (const language of languages) {
+    if (language.code.toLowerCase() === currentLanguage?.toLowerCase()) continue;
+    const { unversioned, versions } = partitionMintlifyVersions(language.nodes);
+    const version = versions.find((candidate) => (versionName ? candidate.name === versionName : candidate.isDefault));
+    const nodes = versions.length === 0 ? unversioned : version ? [...(version.isDefault ? unversioned : []), ...version.nodes] : [];
+    for (const [source, destination] of buildMintlifyRouteMap(nodes)) {
+      routes.set(source, `${destination}?lang=${encodeURIComponent(language.code)}`);
+    }
+  }
+  return routes;
+};
+
+const splitSuffix = (reference: string): { path: string; suffix: string } => {
+  const index = reference.search(/[?#]/);
+  return index === -1 ? { path: reference, suffix: '' } : { path: reference.slice(0, index), suffix: reference.slice(index) };
+};
+
+const internalReferenceKey = (reference: string, sourcePage: string): string | null => {
+  if (!reference || /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(reference)) return null;
+  const { path } = splitSuffix(reference);
+  const sourceDirectory = posix.dirname(normalizedSourcePath(sourcePage));
+  return normalizedSourcePath(path.startsWith('/') ? path : posix.join(sourceDirectory === '.' ? '' : sourceDirectory, path));
+};
+
+/** Source-page paths referenced from Markdown or MDX anchors. Used by the
+ * importer to include linked hidden pages that Mintlify permits outside nav. */
+export const mintlifyInternalLinkTargets = (content: string, sourcePage: string): string[] => {
+  const prose = protectMarkdownCode(content, { maxFenceIndent: Number.POSITIVE_INFINITY }).content;
+  const targets = new Set<string>();
+  const add = (reference: string) => {
+    const key = internalReferenceKey(reference, sourcePage);
+    if (key) targets.add(key);
+  };
+  prose.replace(MARKDOWN_LINK, (_match, _label: string, reference: string) => {
+    add(reference);
+    return _match;
+  });
+  prose.replace(HREF_ATTRIBUTE, (_match, _before: string, reference: string) => {
+    add(reference);
+    return _match;
+  });
+  return [...targets];
+};
+
+/** Rewrite links between source Mintlify pages to the grouped public routes
+ * produced by the import, preserving external URLs, queries, and fragments. */
+export const rewriteMintlifyInternalLinks = (content: string, sourcePage: string, routes: ReadonlyMap<string, string>): string => {
+  const protectedCode = protectMarkdownCode(content, { maxFenceIndent: Number.POSITIVE_INFINITY });
+  const rewrite = (reference: string): string => {
+    if (!reference || /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(reference)) return reference;
+    const { suffix } = splitSuffix(reference);
+    const key = internalReferenceKey(reference, sourcePage);
+    if (!key) return reference;
+    const target = routes.get(key);
+    if (!target) return reference;
+    if (!target.includes('?')) return `${target}${suffix}`;
+    const destination = new URL(target, 'https://import.invalid');
+    const original = new URL(suffix || '/', 'https://import.invalid');
+    const params = new URLSearchParams(original.search);
+    for (const [name, value] of destination.searchParams) params.set(name, value);
+    return `${destination.pathname}?${params}${original.hash}`;
+  };
+  const markdown = protectedCode.content.replace(
+    MARKDOWN_LINK,
+    (_match, label: string, reference: string, title: string) => `[${label}](${rewrite(reference)}${title})`,
+  );
+  return protectedCode.restore(
+    markdown.replace(HREF_ATTRIBUTE, (_match, before: string, reference: string, after: string) => `${before}${rewrite(reference)}${after}`),
+  );
+};

@@ -1,0 +1,85 @@
+import { keys as auth } from '@nibleaf/auth/keys.server';
+import { keys as bullmq } from '@nibleaf/bullmq/keys';
+import { keys as database } from '@nibleaf/database/keys';
+import { keys as qdrant } from '@nibleaf/qdrant/keys';
+import { keys as search } from '@nibleaf/search/keys';
+import { keys as storage } from '@nibleaf/storage/keys';
+import { createEnv } from '@t3-oss/env-core';
+import { z } from 'zod';
+import { Env } from './constants';
+
+const csv = (value: string): string[] =>
+  value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+export const env = createEnv({
+  extends: [auth(), bullmq(), database(), qdrant(), search(), storage()],
+  server: {
+    NODE_ENV: z.enum(Env).default('development'),
+    APP_NAME: z.string().default('Nibleaf'),
+    API_PORT: z.coerce.number().default(4311),
+    SERVER_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(25_000),
+    API_URL: z.url().default('http://localhost:4311'),
+    APP_URL: z.url().default('http://localhost:4310'),
+    ADMIN_URL: z.url().default('http://localhost:4315'),
+    SITE_BASE_DOMAIN: z.string().optional(),
+    // No SaaS default: a self-hoster must not tell their readers to CNAME to a
+    // host they don't control. Falls back to SITE_BASE_DOMAIN in dnsRecords().
+    CUSTOM_DOMAIN_CNAME_TARGET: z.string().optional(),
+    /** Provisioning backend. `ingress` keeps the portable/self-hosted DNS + TLS
+     * flow; `cloudflare-saas` provisions Custom Hostnames and edge certificates. */
+    CUSTOM_DOMAIN_PROVIDER: z.enum(['ingress', 'cloudflare-saas']).default('ingress'),
+    CLOUDFLARE_SAAS_ZONE_ID: z.string().optional(),
+    CLOUDFLARE_SAAS_API_TOKEN: z.string().optional(),
+    CLOUDFLARE_SAAS_WORKER_SCRIPT: z.string().default('nibleaf-custom-domain-edge'),
+    SERVICE_NAME: z.string().default('nibleaf-api'),
+    CORS_ALLOWED_ORIGINS: z.string().default('http://localhost:4310,http://localhost:4315').transform(csv),
+    MCP_ENABLED: z
+      .enum(['true', 'false', '1', '0'])
+      .default('false')
+      .transform((value) => value === 'true' || value === '1'),
+    MCP_ALLOWED_HOSTS: z
+      .string()
+      .optional()
+      .transform((value) => (value ? csv(value) : [])),
+    MCP_RATE_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(10_000).default(120),
+    EMAIL_FROM: z.string().default('nibleaf@localhost'),
+    POSTMARK_API_KEY: z.string().optional(),
+    POSTMARK_MESSAGE_STREAM: z.string().optional(),
+    SMTP_URL: z.string().optional(),
+    OPENROUTER_API_KEY: z.string().optional(),
+    AI_DRAFT_MODEL: z.string().default('openai/gpt-4o-mini'),
+    EXPORT_MAX_ACTIVE_PER_PROJECT: z.coerce.number().int().min(1).max(20).default(3),
+    EXPORT_MAX_DAILY_PER_PROJECT: z.coerce.number().int().min(1).max(1000).default(20),
+    EXPORT_MAX_PAGES: z.coerce.number().int().positive().default(5000),
+    EXPORT_MAX_SNAPSHOT_BYTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(50 * 1024 * 1024),
+    EXPORT_MANUAL_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(7),
+    EXPORT_DOWNLOAD_TTL_SECONDS: z.coerce.number().int().min(30).max(900).default(300),
+    /** Base64-encoded 32-byte AES key used only for Git provider credentials
+     * and webhook secrets. Generate with: openssl rand -base64 32 */
+    GIT_CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
+    /** Current key for project integration credentials and one-time
+     * confirmations. Kept distinct from Git credentials. */
+    INTEGRATION_CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
+    /** Comma-separated prior keys accepted for decrypt-only rotation windows. */
+    INTEGRATION_CREDENTIAL_PREVIOUS_KEYS: z.string().default('').transform(csv),
+    INTEGRATION_CONFIRMATION_TTL_SECONDS: z.coerce.number().int().min(60).max(1800).default(300),
+    INTEGRATION_CONFIRMATION_RETENTION_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+    INTEGRATION_IDEMPOTENCY_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+    /** Shared API/worker authentication secret for opaque Git job execution. */
+    GIT_WORKER_SECRET: z.string().min(32).optional(),
+    /** Explicit override required before the demo seed may touch production. */
+    ALLOW_SEED: z
+      .enum(['true', 'false', '1', '0'])
+      .optional()
+      .transform((value) => value === 'true' || value === '1'),
+  },
+  runtimeEnv: process.env,
+  emptyStringAsUndefined: true,
+});

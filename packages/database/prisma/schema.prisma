@@ -1,0 +1,1438 @@
+// Nibleaf — documentation platform database schema.
+// Auth tables (User/Session/Account/Verification/Organization/Member/Invitation)
+// follow better-auth conventions. Domain tables model documentation sites:
+// Project → Page tree → Deployment snapshots, plus Domain, ApiKey, Asset,
+// Comment, and AnalyticsEvent.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Auth (better-auth) ──────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  /// Platform role for the internal admin panel (apps/admin): "user" | "admin".
+  /// Separate from per-workspace Member roles; managed via the grant-admin script.
+  role          String    @default("user")
+  /// Better Auth admin-plugin moderation fields. `suspendedAt` remains the
+  /// operator-facing timestamp while `banned` is the authentication backstop.
+  banned        Boolean   @default(false)
+  banReason     String?
+  banExpires    DateTime?
+  /// Moderation: set when a platform admin suspends the account. Suspended users
+  /// cannot sign in and every dashboard API request is rejected by the auth guard.
+  suspendedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions        Session[]
+  accounts        Account[]
+  members         Member[]
+  invitations     Invitation[]
+  comments        Comment[]
+  exportJobs      ExportJob[]      @relation("ExportJobCreator")
+  exportSchedules ExportSchedule[] @relation("ExportScheduleCreator")
+  apiKeysCreated  ApiKey[]         @relation("ApiKeyCreator")
+
+  @@map("user")
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  expiresAt            DateTime
+  token                String   @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  ipAddress            String?
+  userAgent            String?
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganizationId String?
+  /// Present only for short-lived support sessions created by a platform admin.
+  /// The customer app uses it to show a persistent warning and a safe exit.
+  impersonatedBy       String?
+
+  @@index([userId])
+  @@index([impersonatedBy])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ─── Organization (workspace) ────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String?  @unique
+  logo      String?
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  members     Member[]
+  invitations Invitation[]
+  projects    Project[]
+  usagePlan          OrganizationUsagePlan?
+  usageStorageMarker UsageStorageMarker?
+  usageIngestCheckpoints UsageIngestCheckpoint[]
+
+  @@map("organization")
+}
+
+/// Provider-neutral commercial configuration. These rows express product
+/// policy only; payment-provider customer/subscription state does not live here.
+model UsagePlan {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  version     Int      @default(1)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  meters      UsagePlanMeter[]
+  entitlements UsageEntitlement[]
+  organizations OrganizationUsagePlan[]
+
+  @@map("usage_plan")
+}
+
+model UsageMeter {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  unit        String
+  aggregation String   @default("sum")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  plans        UsagePlanMeter[]
+  entitlements UsageEntitlement[]
+
+  @@map("usage_meter")
+}
+
+model UsagePlanMeter {
+  planId      String
+  plan        UsagePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  meterId     String
+  meter       UsageMeter @relation(fields: [meterId], references: [id], onDelete: Cascade)
+  limit       BigInt?
+  behavior    String    @default("observe")
+  warningRatio Int      @default(80)
+
+  @@id([planId, meterId])
+  @@map("usage_plan_meter")
+}
+
+model UsageEntitlement {
+  id            String   @id @default(cuid())
+  planId        String
+  plan          UsagePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  capabilityKey String
+  enabled       Boolean
+  limit         BigInt?
+  meterId       String?
+  meter         UsageMeter? @relation(fields: [meterId], references: [id], onDelete: SetNull)
+  behavior      String   @default("observe")
+
+  @@unique([planId, capabilityKey])
+  @@map("usage_entitlement")
+}
+
+model OrganizationUsagePlan {
+  organizationId String       @id
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  planId         String
+  plan           UsagePlan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  status         String       @default("active")
+  effectiveAt    DateTime     @default(now())
+  expiresAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([planId])
+  @@map("organization_usage_plan")
+}
+
+/// Durable retry/audit state for exporting finalized aggregates. It stores no
+/// provider payload, credentials, customer ids, subscription ids, or prices.
+model UsageProviderCheckpoint {
+  id               String       @id @default(cuid())
+  organizationId   String
+  provider         String
+  reconciliationId String       @unique
+  meterKey         String
+  periodStart      DateTime
+  periodEnd        DateTime
+  quantity         Decimal  @db.Decimal(38, 0)
+  status           String       @default("pending")
+  attemptCount     Int          @default(0)
+  lastAttemptAt    DateTime?
+  acceptedAt       DateTime?
+  hasError         Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([organizationId, periodStart, periodEnd])
+  @@index([provider, status])
+  @@map("usage_provider_checkpoint")
+}
+
+/// Relational evidence that this tenant has written ClickHouse usage facts at
+/// least once. Privacy erasure consults it even when analytics is later disabled.
+model UsageStorageMarker {
+  organizationId String       @id
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  firstEnqueuedAt DateTime    @default(now())
+  lastEnqueuedAt  DateTime    @default(now())
+  lastWrittenAt   DateTime?
+  deletionPendingAt DateTime?
+
+  @@map("usage_storage_marker")
+}
+
+/// Content-free, idempotent receipt for a durable usage-ingestion batch. A
+/// pending row makes usage summaries partial until ClickHouse has accepted the
+/// deduplicated events and the worker records successful drainage.
+model UsageIngestCheckpoint {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  projectId      String
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  firstOccurredAt DateTime
+  lastOccurredAt DateTime
+  events          Json
+  payloadDigest   String
+  enqueuedAt     DateTime     @default(now())
+  lastQueuedAt    DateTime?
+  enqueueAttemptCount Int     @default(0)
+  writtenAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId, writtenAt])
+  @@index([projectId, writtenAt, firstOccurredAt, lastOccurredAt], map: "usage_ingest_project_pending_period_idx")
+  @@map("usage_ingest_checkpoint")
+}
+
+model Member {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String       @default("pending")
+  expiresAt      DateTime
+  inviterId      String
+  inviter        User         @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("invitation")
+}
+
+// ─── Documentation domain ──────────────────────────────────────────────────—
+
+enum PageKind {
+  PAGE
+  GROUP
+}
+
+enum DeploymentStatus {
+  PENDING
+  BUILDING
+  READY
+  FAILED
+}
+
+enum SearchIndexRunStatus {
+  PENDING
+  RUNNING
+  READY
+  FAILED
+  DISABLED
+}
+
+enum DomainDnsStatus {
+  PENDING
+  VERIFIED
+  ERROR
+}
+
+enum DomainSslStatus {
+  PENDING
+  PROVISIONING
+  ACTIVE
+  ERROR
+}
+
+/// Reading direction for a project language (drives `dir` on the editor + site).
+enum TextDirection {
+  LTR
+  RTL
+}
+
+/// Published-site access policy. PUBLIC preserves the historical default;
+/// WORKSPACE is the former `config.visibility = private` behavior; READERS uses
+/// dedicated reader identities and audience grants without consuming author seats.
+enum ProjectAccessMode {
+  PUBLIC
+  WORKSPACE
+  READERS
+}
+
+enum ExportFormat {
+  MARKDOWN
+  PDF
+  STATIC_HTML
+}
+
+enum ExportJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ExportTrigger {
+  MANUAL
+  SCHEDULED
+}
+
+enum ExportCadence {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum OpenApiSourceType {
+  UPLOAD
+  URL
+  REPOSITORY
+}
+
+/// A documentation site.
+model Project {
+  id             String            @id @default(cuid())
+  // Each site owns its own Organization (1:1) — that org IS the site's member
+  // boundary, so members/roles/invitations are per-site. See provisionSiteOrg.
+  organizationId String            @unique
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  slug           String
+  description    String?
+  icon           String?
+  /// Full site configuration: { visibility, branding, styling, typography,
+  /// navbar, footer, banner, seo, search, analytics, redirects, variables }.
+  config         Json?
+  accessMode     ProjectAccessMode @default(PUBLIC)
+  /// Moderation: set when a platform admin takes the site down. Taken-down
+  /// projects must not be publicly served and cannot be published.
+  takedownAt     DateTime?
+  takedownReason String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  languages       Language[]
+  translations    ProjectTranslation[]
+  branches        Branch[]
+  pages           Page[]
+  deployments     Deployment[]
+  domains         Domain[]
+  apiKeys         ApiKey[]
+  assets          Asset[]
+  comments        Comment[]
+  analyticsEvents AnalyticsEvent[]
+  readers         Reader[]
+  audiences       Audience[]
+  audienceGrants  AudienceGrant[]
+  readerInvites   ReaderInvitation[]
+  readerSessions  ReaderSession[]
+  jwtAccess       JwtAccessProvider?
+  jwtReplays      JwtReplay[]
+  readerAuditLogs ReaderAuditLog[]
+  exportSnapshots ExportSnapshot[]
+  exportJobs      ExportJob[]
+  exportSchedules ExportSchedule[]
+  openApiDocument OpenApiDocument?
+  gitConnection   GitConnection?
+  gitPreviews     GitPreview[]
+  searchIndexRuns SearchIndexRun[]
+  usageIngestCheckpoints UsageIngestCheckpoint[]
+  addons          ProjectAddon[]
+  addonAuditEvents ProjectAddonAuditEvent[]
+  integrations                  ProjectIntegration[]
+  integrationAuditEvents        IntegrationAuditEvent[]
+  integrationConfirmations      IntegrationConfirmation[]
+  integrationIdempotencyRecords IntegrationIdempotencyRecord[]
+  mcpAuditEvents  McpAuditEvent[]
+
+  @@unique([organizationId, slug])
+  @@unique([slug])
+  @@map("project")
+}
+
+/// Authoritative per-project state for a first-party Nibleaf capability. The
+/// registry owns valid keys/config shapes; integrations and provider secrets do
+/// not belong here.
+model ProjectAddon {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key       String
+  enabled   Boolean
+  config    Json     @default("{}")
+  revision  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, key])
+  @@index([projectId, updatedAt])
+  @@map("project_addon")
+}
+
+/// Append-only, privacy-minimized history for add-on state/config changes.
+/// Actor ids are derived from trusted request context and intentionally have no
+/// foreign key so account/key deletion does not erase the security trail.
+model ProjectAddonAuditEvent {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  addonKey         String
+  actorUserId      String?
+  actorApiKeyId    String?
+  action           String
+  previousEnabled  Boolean?
+  nextEnabled      Boolean
+  previousConfig   Json?
+  nextConfig       Json
+  revision         Int
+  createdAt        DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, addonKey, createdAt])
+  @@map("project_addon_audit_event")
+}
+
+/// The editable OpenAPI source and last validated document for a site. The
+/// document is copied into immutable deployment snapshots at publish time;
+/// source details stay private to workspace members.
+model OpenApiDocument {
+  id          String            @id @default(cuid())
+  projectId   String            @unique
+  project     Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  path        String            @default("api-reference")
+  sourceType  OpenApiSourceType
+  sourceUrl   String?
+  sourcePath  String?
+  document    Json
+  contentHash String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@map("openapi_document")
+}
+
+/// A content branch within a project (git-style, DB-backed). `main` is the
+/// default branch the published site is built from; other branches are isolated
+/// drafts you can edit and preview, then merge into main.
+model Branch {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pages Page[]
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("branch")
+}
+
+/// Durable repository configuration for two-way authoring. Provider credentials
+/// and webhook secrets are envelope-encrypted by the API before they reach these
+/// columns; plaintext credentials are never persisted.
+model GitConnection {
+  id                     String    @id @default(cuid())
+  projectId              String    @unique
+  project                Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  provider               String    @default("github")
+  repository             String
+  baseBranch             String    @default("main")
+  headBranch             String
+  contentPath            String    @default("")
+  importBranchId         String?
+  importLanguageId       String?
+  credentialEncrypted    String?
+  credentialFingerprint  String?
+  webhookSecretEncrypted String?
+  remoteBaseSha          String?
+  remoteHeadSha          String?
+  lastSyncStatus         String    @default("IDLE")
+  lastSyncError          String?
+  lastSyncedAt           DateTime?
+  createdById            String
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  files             GitFileState[]
+  operations        GitSyncOperation[]
+  pullRequests      GitPullRequest[]
+  previews          GitPreview[]
+  webhookDeliveries GitWebhookDelivery[]
+  auditEvents       GitAuditEvent[]
+
+  @@index([provider, repository])
+  @@map("git_connection")
+}
+
+/// One idempotent import/push/PR/preview operation. A caller-supplied key is
+/// scoped to the connection, so retries return the original durable result.
+model GitSyncOperation {
+  id             String        @id @default(cuid())
+  connectionId   String
+  connection     GitConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  kind           String
+  status         String        @default("QUEUED")
+  idempotencyKey String
+  requestHash    String
+  requestedById  String?
+  baseBranch     String
+  headBranch     String
+  commitMessage  String?
+  authorName     String?
+  authorEmail    String?
+  request        Json?
+  changedFiles   Json?
+  remoteSha      String?
+  pullRequestNo  Int?
+  pullRequestUrl String?
+  error          String?
+  createdAt      DateTime      @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+
+  conflicts GitConflict[]
+
+  @@unique([connectionId, idempotencyKey])
+  @@index([connectionId, createdAt])
+  @@index([status])
+  @@map("git_sync_operation")
+}
+
+/// The last common base for one repository file. This is the third input to
+/// three-way reconciliation (base / Nibleaf / upstream Git).
+model GitFileState {
+  id            String        @id @default(cuid())
+  connectionId  String
+  connection    GitConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  path          String
+  /// PLATFORM is generated and protected, SHARED is three-way authored MDX,
+  /// CUSTOMER is repository-owned code preserved after the initial scaffold.
+  ownership     String        @default("SHARED")
+  pageId        String?
+  branchId      String?
+  languageId    String?
+  baseContent   String?       @db.Text
+  baseExists    Boolean       @default(true)
+  baseBlobSha   String?
+  remoteBlobSha String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([connectionId, path])
+  @@index([connectionId, pageId])
+  @@map("git_file_state")
+}
+
+/// A conflict snapshot is immutable until an authorized user explicitly picks
+/// ours, theirs, or custom content. No side is overwritten while status=OPEN.
+model GitConflict {
+  id              String           @id @default(cuid())
+  operationId     String
+  operation       GitSyncOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  path            String
+  baseContent     String?          @db.Text
+  oursContent     String?          @db.Text
+  theirsContent   String?          @db.Text
+  status          String           @default("OPEN")
+  resolution      String?
+  resolvedContent String?          @db.Text
+  resolvedById    String?
+  resolvedAt      DateTime?
+  createdAt       DateTime         @default(now())
+
+  @@unique([operationId, path])
+  @@index([status])
+  @@map("git_conflict")
+}
+
+model GitPullRequest {
+  id           String        @id @default(cuid())
+  connectionId String
+  connection   GitConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  number       Int
+  url          String
+  title        String
+  state        String        @default("open")
+  draft        Boolean       @default(true)
+  baseBranch   String
+  headBranch   String
+  headSha      String?
+  lastSyncedAt DateTime      @default(now())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  previews GitPreview[]
+
+  @@unique([connectionId, number])
+  @@unique([connectionId, headBranch])
+  @@map("git_pull_request")
+}
+
+/// Immutable, token-addressed PR documentation snapshot. Superseded previews
+/// remain auditable but only READY previews are served publicly.
+model GitPreview {
+  id            String          @id @default(cuid())
+  projectId     String
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  connectionId  String
+  connection    GitConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  pullRequestId String?
+  pullRequest   GitPullRequest? @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
+  token         String          @unique
+  sourceSha     String
+  status        String          @default("PENDING")
+  snapshot      Json?
+  url           String?
+  error         String?
+  createdAt     DateTime        @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  @@unique([connectionId, sourceSha])
+  @@index([projectId, status])
+  @@map("git_preview")
+}
+
+model GitWebhookDelivery {
+  id                 String        @id @default(cuid())
+  connectionId       String
+  connection         GitConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  providerDeliveryId String
+  event              String
+  payloadHash        String
+  status             String        @default("ACCEPTED")
+  attempts           Int           @default(0)
+  error              String?
+  receivedAt         DateTime      @default(now())
+  processedAt        DateTime?
+
+  @@unique([connectionId, providerDeliveryId])
+  @@index([status, receivedAt])
+  @@map("git_webhook_delivery")
+}
+
+/// Security-relevant Git actions use a dedicated append-only audit trail rather
+/// than transient application logs. Metadata is intentionally secret-free.
+model GitAuditEvent {
+  id           String         @id @default(cuid())
+  connectionId String?
+  connection   GitConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  projectId    String
+  actorUserId  String?
+  action       String
+  metadata     Json?
+  createdAt    DateTime       @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([connectionId, createdAt])
+  @@map("git_audit_event")
+}
+
+/// Project-owned external connections whose lifecycle is not already owned by
+/// a provider-specific model such as GitConnection or Project.config.analytics.
+/// Secrets are versioned AES-GCM envelopes; config contains allowlisted,
+/// non-secret provider settings only.
+model ProjectIntegration {
+  id                     String    @id @default(cuid())
+  projectId              String
+  project                Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  providerId             String
+  status                 String    @default("ACTIVE")
+  config                 Json?
+  credentialEncrypted    String
+  revision               Int       @default(1)
+  lastVerificationStatus String    @default("UNVERIFIED")
+  lastVerificationCode   String?
+  lastVerifiedAt         DateTime?
+  createdById            String
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  auditEvents   IntegrationAuditEvent[]
+  deliveries    IntegrationWebhookDelivery[]
+  confirmations IntegrationConfirmation[]
+
+  @@unique([projectId, providerId])
+  @@index([projectId, status])
+  @@map("project_integration")
+}
+
+/// Append-only, secret-free lifecycle audit trail. Provider responses, raw
+/// webhook payloads, credentials, and client idempotency keys are prohibited.
+model IntegrationAuditEvent {
+  id             String              @id @default(cuid())
+  connectionId   String?
+  connection     ProjectIntegration? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  projectId      String
+  project        Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  providerId     String
+  organizationId String
+  principalType  String
+  principalId    String
+  action         String
+  result         String
+  code           String?
+  metadata       Json?
+  createdAt      DateTime            @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, providerId, createdAt])
+  @@index([connectionId, createdAt])
+  @@map("integration_audit_event")
+}
+
+/// One-time, short-lived confirmation issued from a Better Auth dashboard
+/// session and optionally bound to an MCP API key. Only the token digest is
+/// persisted; consuming it is transactional with deletion.
+model IntegrationConfirmation {
+  id                 String              @id @default(cuid())
+  projectId          String
+  project            Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  connectionId       String?
+  connection         ProjectIntegration? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  providerId         String
+  connectionRevision Int
+  principalType      String
+  principalId        String
+  tokenDigest        String              @unique
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  createdById        String
+  createdAt          DateTime            @default(now())
+
+  @@index([projectId, expiresAt])
+  @@index([projectId, consumedAt])
+  @@map("integration_confirmation")
+}
+
+/// Delivery bookkeeping deliberately excludes request and response bodies.
+/// Idempotency keys are digested before persistence.
+model IntegrationWebhookDelivery {
+  id                String             @id @default(cuid())
+  connectionId      String
+  connection        ProjectIntegration @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  event             String
+  eventVersion      Int                @default(1)
+  idempotencyDigest String
+  requestDigest     String
+  status            String             @default("PENDING")
+  attempts          Int                @default(0)
+  responseStatus    Int?
+  errorCode         String?
+  result            Json?
+  createdAt         DateTime           @default(now())
+  startedAt         DateTime?
+  completedAt       DateTime?
+
+  @@unique([connectionId, idempotencyDigest])
+  @@index([status, startedAt])
+  @@map("integration_webhook_delivery")
+}
+
+/// Bounded mutation replay ledger. Caller keys and credential-bearing request
+/// bodies are HMAC-digested before persistence; expired rows are pruned by the
+/// lifecycle action boundary.
+model IntegrationIdempotencyRecord {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  providerId     String
+  action         String
+  keyDigest      String
+  requestDigest  String
+  connectionId   String?
+  resultRevision Int?
+  result         Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([projectId, providerId, action, keyDigest])
+  @@index([projectId, expiresAt])
+  @@map("integration_idempotency_record")
+}
+
+/// A language/locale a project's docs are authored in. Each language owns its
+/// own page tree; one language per project is the default.
+model Language {
+  id        String        @id @default(cuid())
+  projectId String
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  code      String
+  label     String
+  direction TextDirection @default(LTR)
+  isDefault Boolean       @default(false)
+  /// Serving toggle: a disabled language stays fully editable in the dashboard
+  /// but disappears from every public surface of the published site (language
+  /// switcher, hreflang alternates, sitemap, llms.txt, search). The default
+  /// language can never be disabled.
+  enabled   Boolean       @default(true)
+  position  Int           @default(0)
+  /// Per-language SEO + chrome overrides: { seo: { metaTitle,
+  /// metaDescription, socialImage, allowIndex }, navbar, footer, banner, search }.
+  /// Layered between project.config and page.config when rendering the live site.
+  config    Json?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  pages               Page[]
+  projectTranslations ProjectTranslation[]
+
+  @@unique([projectId, code])
+  @@index([projectId])
+  @@map("language")
+}
+
+/// Localized identity for a project. Content that needs translation belongs in
+/// an explicit translation table, linked to a real Language row, rather than in
+/// an untyped JSON config blob.
+model ProjectTranslation {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  languageId  String
+  language    Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  name        String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, languageId])
+  @@index([languageId])
+  @@map("project_translation")
+}
+
+/// A node in a project's documentation tree. `kind = GROUP` is a folder with no
+/// content; `kind = PAGE` is a renderable MDX page. `path` is the full slug path.
+/// Pages belong to a `Language`; the tree is scoped per (project, language).
+model Page {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  languageId     String
+  language       Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  branchId       String
+  branch         Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  parentId       String?
+  parent         Page?    @relation("PageTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Page[]   @relation("PageTree")
+  kind           PageKind @default(PAGE)
+  title          String
+  slug           String
+  path           String
+  icon           String?
+  description    String?
+  content        String   @default("")
+  /// Per-page overrides: { seo: { metaTitle, metaDescription, ogImage,
+  /// canonicalUrl, noindex }, sidebarTitle, mode: 'default'|'wide'|'center',
+  /// hideToc }. Layered over language.config + project.config on the live site.
+  config         Json?
+  /// Links the same logical page across languages whose slugs differ (e.g. EN
+  /// "introduction-merged" ↔ AR "introduction"), so hreflang alternates pair up
+  /// even when paths don't match. Shared by all language variants of one page.
+  translationKey String?
+  position       Int      @default(0)
+  hidden         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  comments       Comment[]
+  audienceGrants AudienceGrant[]
+
+  @@index([projectId, languageId, path])
+  @@index([projectId, parentId])
+  @@index([projectId, translationKey])
+  @@index([languageId])
+  @@index([branchId])
+  @@map("page")
+}
+
+// ─── Private reader access ──────────────────────────────────────────────────
+
+/// A customer/reader identity. Readers are deliberately separate from User and
+/// Member so granting docs access never grants dashboard access or an author seat.
+model Reader {
+  id              String    @id @default(cuid())
+  projectId       String
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  email           String?
+  name            String?
+  externalSubject String?
+  status          String    @default("INVITED")
+  invitedAt       DateTime  @default(now())
+  activatedAt     DateTime?
+  revokedAt       DateTime?
+  lastSeenAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  audiences   ReaderAudience[]
+  invitations ReaderInvitation[]
+  sessions    ReaderSession[]
+  auditLogs   ReaderAuditLog[]
+
+  @@unique([projectId, email])
+  @@unique([projectId, externalSubject])
+  @@index([projectId, status])
+  @@map("reader")
+}
+
+model Audience {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  readers ReaderAudience[]
+  grants  AudienceGrant[]
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("audience")
+}
+
+model ReaderAudience {
+  readerId   String
+  reader     Reader   @relation(fields: [readerId], references: [id], onDelete: Cascade)
+  audienceId String
+  audience   Audience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([readerId, audienceId])
+  @@index([audienceId])
+  @@map("reader_audience")
+}
+
+/// A grant applies to the entire site when pageId is null, or to a single
+/// published page when pageId is set. scopeKey makes the nullable scope unique.
+model AudienceGrant {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  audienceId String
+  audience   Audience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  pageId     String?
+  page       Page?    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  scopeKey   String
+  createdAt  DateTime @default(now())
+
+  @@unique([audienceId, scopeKey])
+  @@index([projectId, pageId])
+  @@map("audience_grant")
+}
+
+model ReaderInvitation {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  readerId    String
+  reader      Reader    @relation(fields: [readerId], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  @@index([projectId, expiresAt])
+  @@index([readerId])
+  @@map("reader_invitation")
+}
+
+model ReaderSession {
+  id            String    @id @default(cuid())
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  readerId      String
+  reader        Reader    @relation(fields: [readerId], references: [id], onDelete: Cascade)
+  tokenHash     String    @unique
+  source        String    @default("INVITATION")
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  lastUsedAt    DateTime  @default(now())
+  ipHash        String?
+  userAgentHash String?
+  createdAt     DateTime  @default(now())
+
+  @@index([projectId, expiresAt])
+  @@index([readerId, revokedAt])
+  @@map("reader_session")
+}
+
+/// Per-site OIDC/JWT handoff configuration. Only public verification material
+/// is persisted: a HTTPS JWKS URL or an inline public JWKS document.
+model JwtAccessProvider {
+  id                 String   @id @default(cuid())
+  projectId          String   @unique
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  enabled            Boolean  @default(false)
+  issuer             String
+  audience           String
+  jwksUrl            String?
+  publicJwks         Json?
+  subjectClaim       String   @default("sub")
+  emailClaim         String   @default("email")
+  nameClaim          String   @default("name")
+  groupsClaim        String   @default("groups")
+  claimMapping       Json?
+  sessionTtlMinutes  Int      @default(480)
+  maxTokenAgeSeconds Int      @default(300)
+  clockToleranceSecs Int      @default(30)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("jwt_access_provider")
+}
+
+model JwtReplay {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  jtiHash   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, jtiHash])
+  @@index([expiresAt])
+  @@map("jwt_replay")
+}
+
+model ReaderAuditLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  readerId    String?
+  reader      Reader?  @relation(fields: [readerId], references: [id], onDelete: SetNull)
+  actorUserId String?
+  action      String
+  metadata    Json?
+  ipHash      String?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([readerId, createdAt])
+  @@map("reader_audit_log")
+}
+
+/// An immutable snapshot of a project's docs at publish time. The live site is
+/// served from the latest READY deployment.
+model Deployment {
+  id            String           @id @default(cuid())
+  projectId     String
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version       Int
+  status        DeploymentStatus @default(PENDING)
+  /// { project: {...}, pages: [...] } captured at publish time.
+  snapshot      Json?
+  pagesCount    Int              @default(0)
+  commitMessage String?
+  createdById   String?
+  error         String?
+  /// Structured per-page check failures for FAILED deployments:
+  /// [{ type: "broken-link" | "grammar", pageTitle, pagePath, detail }].
+  errorDetails  Json?
+  createdAt     DateTime         @default(now())
+  completedAt   DateTime?
+
+  exportSnapshots ExportSnapshot[]
+  searchIndexRuns SearchIndexRun[]
+
+  @@unique([projectId, version])
+  @@index([projectId, status])
+  @@map("deployment")
+}
+
+/// Durable, privacy-minimized state for one immutable deployment indexing run.
+/// Provider payloads, content, vectors, credentials, paths, and titles never
+/// enter this table. `issueSample` is bounded worker-authored metadata containing
+/// only page/chunk identifiers, language/version, status, and a stable code.
+model SearchIndexRun {
+  id                    String               @id @default(cuid())
+  projectId             String
+  project               Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deploymentId          String?
+  deployment            Deployment?          @relation(fields: [deploymentId], references: [id], onDelete: SetNull)
+  status                SearchIndexRunStatus @default(PENDING)
+  jobId                 String?              @unique
+  claimToken            String?
+  claimExpiresAt        DateTime?
+  attempt               Int                  @default(0)
+  logicalIndexId        String
+  schemaVersion         String
+  revisionId            String
+  embeddingModel        String
+  vectorSize            Int
+  expectedChunks        Int                  @default(0)
+  expectedPages         Int                  @default(0)
+  indexedChunks         Int                  @default(0)
+  indexedPages          Int                  @default(0)
+  embeddedChunks        Int                  @default(0)
+  reusedChunks          Int                  @default(0)
+  unchangedChunks       Int                  @default(0)
+  metadataUpdatedChunks Int                  @default(0)
+  deletedChunks         Int                  @default(0)
+  staleChunks           Int                  @default(0)
+  failedChunks          Int                  @default(0)
+  errorCode             String?
+  issueSample           Json?
+  requestedById         String?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([deploymentId, createdAt])
+  @@map("search_index_run")
+}
+
+/// Immutable copy of one READY deployment plus the storage asset manifest used
+/// by every artifact in an export job. Keeping this separate from mutable site
+/// rows guarantees multi-format jobs all render exactly one published revision.
+model ExportSnapshot {
+  id                String     @id @default(cuid())
+  projectId         String
+  project           Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deploymentId      String
+  deployment        Deployment @relation(fields: [deploymentId], references: [id], onDelete: Restrict)
+  deploymentVersion Int
+  snapshot          Json
+  assets            Json
+  pagesCount        Int
+  contentBytes      Int
+  createdAt         DateTime   @default(now())
+
+  jobs ExportJob[]
+
+  @@index([projectId, createdAt])
+  @@map("export_snapshot")
+}
+
+/// One background run may produce multiple formats from the same snapshot.
+/// idempotencyKey is populated for scheduled slots so dispatcher retries cannot
+/// create duplicate archives.
+model ExportJob {
+  id                String          @id @default(cuid())
+  projectId         String
+  project           Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshotId        String
+  snapshot          ExportSnapshot  @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  scheduleId        String?
+  schedule          ExportSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  formats           ExportFormat[]
+  status            ExportJobStatus @default(PENDING)
+  trigger           ExportTrigger   @default(MANUAL)
+  idempotencyKey    String?         @unique
+  createdById       String?
+  createdBy         User?           @relation("ExportJobCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  attempts          Int             @default(0)
+  error             String?
+  cancelRequestedAt DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  expiresAt         DateTime?
+  createdAt         DateTime        @default(now())
+
+  artifacts ExportArtifact[]
+
+  @@index([projectId, createdAt])
+  @@index([scheduleId, createdAt])
+  @@index([status, createdAt])
+  @@map("export_job")
+}
+
+model ExportArtifact {
+  id          String       @id @default(cuid())
+  jobId       String
+  job         ExportJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  format      ExportFormat
+  storageKey  String       @unique
+  fileName    String
+  contentType String
+  size        Int
+  checksum    String
+  createdAt   DateTime     @default(now())
+
+  @@unique([jobId, format])
+  @@map("export_artifact")
+}
+
+/// Archive schedules use an explicit local wall-clock policy instead of raw
+/// cron text, which keeps validation and DST behaviour deterministic.
+model ExportSchedule {
+  id             String         @id @default(cuid())
+  projectId      String
+  project        Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name           String
+  formats        ExportFormat[]
+  cadence        ExportCadence
+  timezone       String
+  hour           Int
+  minute         Int
+  weekday        Int?
+  monthday       Int?
+  retentionCount Int            @default(12)
+  retentionDays  Int            @default(90)
+  destination    String         @default("STORAGE")
+  enabled        Boolean        @default(true)
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+  lastError      String?
+  createdById    String?
+  createdBy      User?          @relation("ExportScheduleCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  jobs ExportJob[]
+
+  @@index([projectId, createdAt])
+  @@index([enabled, nextRunAt])
+  @@map("export_schedule")
+}
+
+model Domain {
+  id                 String          @id @default(cuid())
+  projectId          String
+  project            Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  domain             String          @unique
+  verified           Boolean         @default(false)
+  verificationToken  String
+  /// Provisioning backend. Kept as a string so self-hosters can add provider
+  /// adapters without a database enum migration.
+  provider           String          @default("INGRESS")
+  providerHostnameId String?
+  /// Provider-owned status/validation details. Secrets are never stored here.
+  providerData       Json?
+  isPrimary          Boolean         @default(false)
+  dnsStatus          DomainDnsStatus @default(PENDING)
+  sslStatus          DomainSslStatus @default(PENDING)
+  lastCheckedAt      DateTime?
+  lastError          String?
+  createdAt          DateTime        @default(now())
+  verifiedAt         DateTime?
+
+  @@index([projectId])
+  @@map("domain")
+}
+
+model ApiKey {
+  id           String    @id @default(cuid())
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name         String
+  hashedSecret String    @unique
+  lastFour     String
+  scopes       String[]
+  createdById  String?
+  createdBy    User?     @relation("ApiKeyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  rotatedFromId String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+
+  @@index([projectId])
+  @@index([createdById])
+  @@index([rotatedFromId])
+  @@map("api_key")
+}
+
+/// Privacy-minimized append-only audit for MCP authentication and operations.
+/// Inputs, content, credentials, network identifiers, and provider payloads
+/// are intentionally absent.
+model McpAuditEvent {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  apiKeyId   String?
+  requestId  String
+  kind       String
+  operation  String
+  capability String
+  outcome    String
+  errorCode  String?
+  durationMs Int
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([requestId])
+  @@map("mcp_audit_event")
+}
+
+
+model Asset {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key         String   @unique
+  url         String
+  contentType String
+  size        Int
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@map("asset")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pageId    String?
+  page      Page?    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  resolved  Boolean  @default(false)
+  /// Figma-style anchor: which block/selection the comment is attached to.
+  /// Shape: { quote: string, from?: number, to?: number } — `quote` (the anchored
+  /// text) is the durable locator (re-found on load, since page content is Markdown
+  /// with no stable node ids); from/to are creation-time position hints.
+  anchor    Json?
+  createdAt DateTime @default(now())
+
+  @@index([projectId, pageId])
+  @@map("comment")
+}
+
+/// Platform-level product events (activation funnel: signup_completed,
+/// page_edited, publish_clicked, publish_ready, publish_failed). Not tied to a
+/// single site — powers the apps/admin funnel card. userId/projectId are plain
+/// strings (no FK) so events survive user/project deletion.
+model PlatformEvent {
+  id        String   @id @default(cuid())
+  type      String
+  userId    String?
+  projectId String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@map("platform_event")
+}
+
+/// A per-user in-app notification (the bell inbox in the dashboard header).
+/// userId/projectId are plain strings (no FK) — mirroring PlatformEvent — so
+/// rows stay cheap to insert from the worker and survive project deletion.
+/// `type` is a free-form tag ("deploy_ready", "member_joined", "import", …).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  projectId String?
+  type      String
+  title     String
+  body      String?
+  /// Dashboard-relative link opened when the notification is clicked.
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@map("notification")
+}
+
+/// Page views and search queries on published sites (powers the analytics tab).
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type      String   @default("pageview") // "pageview" | "search" | "feedback"
+  path      String?
+  referrer  String?
+  country   String?
+  device    String?
+  language  String? // active language code at view time (e.g. "en", "ar")
+  sessionId String?
+  query     String? // search query or feedback sentiment
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, type])
+  @@map("analytics_event")
+}

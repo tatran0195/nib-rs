@@ -1,0 +1,175 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Nibleaf documentation",
+  "description": "Use Nibleaf Cloud or operate the self-hosted documentation platform.",
+  "theme": "mint",
+  "colors": {
+    "primary": "#B96A3D",
+    "light": "#C67A50",
+    "dark": "#A85832"
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "en",
+        "default": true,
+        "x-nibleaf": {
+          "label": "English",
+          "config": { "search": { "placeholder": "Search documentation" } }
+        },
+        "groups": [
+          {
+            "group": "Getting started",
+            "x-nibleaf": { "slug": "getting-started" },
+            "pages": [
+              "getting-started/introduction",
+              "getting-started/cloud",
+              "getting-started/self-hosted"
+            ]
+          },
+          {
+            "group": "Use Nibleaf",
+            "x-nibleaf": { "slug": "use-nibleaf" },
+            "pages": [
+              "product/authoring",
+              "product/themes",
+              "product/add-ons",
+              "product/markdown-mdx",
+              "git-authoring",
+              "product/publishing",
+              "product/exports",
+              "redirects",
+              "product/arabic-rtl",
+              "product/migration"
+            ]
+          },
+          {
+            "group": "Secure access",
+            "x-nibleaf": { "slug": "secure-access" },
+            "pages": ["private-reader-access"]
+          },
+          {
+            "group": "Self-hosting",
+            "x-nibleaf": { "slug": "self-hosting" },
+            "pages": [
+              "self-hosting/configuration",
+              "self-hosting/mcp",
+              "self-hosting/search-ai",
+              "self-hosting/production",
+              "self-hosting/combined-release-migration",
+              "self-hosting/clickhouse-analytics",
+              "self-hosting/usage-metering",
+              "self-hosting/backups-upgrades",
+              "self-hosting/troubleshooting"
+            ]
+          },
+          {
+            "group": "Releases",
+            "x-nibleaf": { "slug": "releases" },
+            "pages": ["releases/august-2026-capabilities"]
+          },
+          {
+            "group": "Reference",
+            "x-nibleaf": { "slug": "reference" },
+            "pages": [
+              "reference/environment-variables",
+              "reference/integrations-engine",
+              "reference/api",
+              "reference/known-limitations"
+            ]
+          },
+          {
+            "group": "Contribute",
+            "x-nibleaf": { "slug": "contribute" },
+            "pages": ["contributing/documentation"]
+          }
+        ]
+      },
+      {
+        "language": "ar",
+        "x-nibleaf": {
+          "label": "العربية",
+          "translation": {
+            "name": "توثيق Nibleaf",
+            "description": "دليل استخدام Nibleaf Cloud وتشغيل منصة التوثيق بالاستضافة الذاتية."
+          },
+          "config": {
+            "seo": {
+              "metaTitle": "توثيق Nibleaf",
+              "metaDescription": "دليل عربي لاستخدام Nibleaf Cloud وتشغيل منصة التوثيق بالاستضافة الذاتية.",
+              "allowIndex": true
+            },
+            "search": { "placeholder": "ابحث في التوثيق" }
+          }
+        },
+        "groups": [
+          {
+            "group": "البدء",
+            "x-nibleaf": { "slug": "getting-started" },
+            "pages": [
+              "ar/getting-started/introduction",
+              "ar/getting-started/cloud",
+              "ar/getting-started/self-hosted"
+            ]
+          },
+          {
+            "group": "استخدام Nibleaf",
+            "x-nibleaf": { "slug": "use-nibleaf" },
+            "pages": [
+              "ar/product/authoring",
+              "ar/product/themes",
+              "ar/product/add-ons",
+              "ar/product/markdown-mdx",
+              "ar/git-authoring",
+              "ar/product/publishing",
+              "ar/product/exports",
+              "ar/redirects",
+              "ar/product/arabic-rtl",
+              "ar/product/migration"
+            ]
+          },
+          {
+            "group": "الوصول الآمن",
+            "x-nibleaf": { "slug": "secure-access" },
+            "pages": ["ar/private-reader-access"]
+          },
+          {
+            "group": "الاستضافة الذاتية",
+            "x-nibleaf": { "slug": "self-hosting" },
+            "pages": [
+              "ar/self-hosting/configuration",
+              "ar/self-hosting/mcp",
+              "ar/self-hosting/search-ai",
+              "ar/self-hosting/production",
+              "ar/self-hosting/combined-release-migration",
+              "ar/self-hosting/clickhouse-analytics",
+              "ar/self-hosting/usage-metering",
+              "ar/self-hosting/backups-upgrades",
+              "ar/self-hosting/troubleshooting"
+            ]
+          },
+          {
+            "group": "الإصدارات",
+            "x-nibleaf": { "slug": "releases" },
+            "pages": ["ar/releases/august-2026-capabilities"]
+          },
+          {
+            "group": "المرجع",
+            "x-nibleaf": { "slug": "reference" },
+            "pages": [
+              "ar/reference/environment-variables",
+              "ar/reference/integrations-engine",
+              "ar/reference/api",
+              "ar/reference/known-limitations"
+            ]
+          },
+          {
+            "group": "المساهمة",
+            "x-nibleaf": { "slug": "contribute" },
+            "pages": ["ar/contributing/documentation"]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,686 @@
+import { slugify } from '@nibleaf/shared';
+import { type LanguageConfig, languageConfigSchema, type ProjectConfig, projectConfigSchema } from '@nibleaf/validators';
+import { importDocumentSchema, nonEmptyImportStringSchema } from '../../validators/importers';
+
+/**
+ * Pure mapping logic for the Mintlify importer: locate the config file,
+ * normalize `docs.json` (2024+ schema) / `mint.json` (legacy) navigation into
+ * a page tree, and translate site chrome into our `ProjectConfig` shape.
+ * No prisma / fetch / `@/…` imports so unit tests run without a database.
+ */
+
+// ─── Navigation model ────────────────────────────────────────────────────────
+
+export interface NavGroupNode {
+  kind: 'group';
+  title: string;
+  icon?: string;
+  /** Stable Nibleaf route segment for localized group labels. */
+  slug?: string;
+  /** Which schema construct produced this group (tabs/anchors become groups too). */
+  origin: 'group' | 'tab' | 'anchor' | 'dropdown' | 'language' | 'version' | 'menu' | 'product';
+  isDefault?: boolean;
+  children: NavNode[];
+}
+
+interface NavPageNode {
+  kind: 'page';
+  /** Repo-relative page path without extension, e.g. `guides/quickstart`. */
+  path: string;
+  title?: string;
+  icon?: string;
+  tag?: string;
+}
+
+export type NavNode = NavGroupNode | NavPageNode;
+
+export interface MintlifyNavResult {
+  nodes: NavNode[];
+  warnings: string[];
+}
+
+export interface MintlifyLanguageNavigation {
+  code: string;
+  label: string;
+  direction: 'LTR' | 'RTL';
+  isDefault: boolean;
+  enabled: boolean;
+  nodes: NavNode[];
+  /** Nibleaf-only import metadata. Kept under the namespaced `x-nibleaf`
+   * extension so the same docs.json remains portable to Mintlify. */
+  config?: LanguageConfig;
+  translation?: { name?: string; description?: string };
+}
+
+export interface MintlifyLanguageResult {
+  languages: MintlifyLanguageNavigation[];
+  warnings: string[];
+}
+
+type Dict = Record<string, unknown>;
+
+const isDict = (value: unknown): value is Dict => importDocumentSchema.safeParse(value).success;
+const asString = (value: unknown) => {
+  const parsed = nonEmptyImportStringSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+};
+const isExternalUrl = (value: string): boolean => /^https?:\/\//i.test(value);
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  ar: 'العربية',
+  en: 'English',
+  he: 'עברית',
+  fa: 'فارسی',
+  ur: 'اردو',
+};
+
+const RTL_LANGUAGES = /^(?:ar|fa|he|iw|ur|ps|sd|ckb|dv|yi|ug)(?:[-_]|$)/i;
+const RTL_SCRIPTS = /[-_](?:Arab|Hebr|Thaa|Syrc)(?:[-_]|$)/i;
+const languageDirection = (code: string): 'LTR' | 'RTL' => (RTL_LANGUAGES.test(code) || RTL_SCRIPTS.test(code) ? 'RTL' : 'LTR');
+
+/** docs.json container kinds, in the order Mintlify nests them. */
+const CONTAINERS = [
+  { list: 'languages', label: 'language', origin: 'language' },
+  { list: 'versions', label: 'version', origin: 'version' },
+  { list: 'tabs', label: 'tab', origin: 'tab' },
+  { list: 'products', label: 'product', origin: 'product' },
+  { list: 'dropdowns', label: 'dropdown', origin: 'dropdown' },
+  { list: 'anchors', label: 'anchor', origin: 'anchor' },
+  { list: 'menu', label: 'item', origin: 'menu' },
+  { list: 'menus', label: 'menu', origin: 'menu' },
+] as const;
+
+const normalizePagePath = (value: string): string =>
+  value
+    .trim()
+    .replace(/^\.?\//, '')
+    .replace(/\.(mdx?|md)$/i, '');
+
+/** Entries of a `pages` array: page paths, nested groups, or (rarely) containers. */
+const parsePagesArray = (entries: unknown, warnings: string[]): NavNode[] => {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const nodes: NavNode[] = [];
+  for (const entry of entries) {
+    const pageEntry = asString(entry);
+    if (pageEntry) {
+      if (isExternalUrl(pageEntry)) {
+        warnings.push(`Skipped external navigation link "${pageEntry}".`);
+        continue;
+      }
+      const path = normalizePagePath(pageEntry);
+      if (path) {
+        nodes.push({ kind: 'page', path });
+      }
+      continue;
+    }
+    if (isDict(entry)) {
+      const page = asString(entry.page) ?? asString(entry.path);
+      if (page) {
+        if (isExternalUrl(page)) {
+          warnings.push(`Skipped external navigation link "${page}".`);
+          continue;
+        }
+        const path = normalizePagePath(page);
+        if (path) {
+          nodes.push({
+            kind: 'page',
+            path,
+            ...(asString(entry.label) || asString(entry.title) ? { title: asString(entry.label) ?? asString(entry.title) } : {}),
+            ...(asString(entry.icon) ? { icon: asString(entry.icon) } : {}),
+            ...(asString(entry.tag) ? { tag: asString(entry.tag) } : {}),
+          });
+        }
+        continue;
+      }
+      nodes.push(...parseContainerObject(entry, warnings));
+      continue;
+    }
+    warnings.push('Skipped an unrecognized navigation entry.');
+  }
+  return nodes;
+};
+
+/** Resolve every nested division of a docs.json container object, in schema order. */
+const resolveDivisions = (container: Dict, warnings: string[]): NavNode[] => {
+  const nodes: NavNode[] = [];
+  for (const { list, label, origin } of CONTAINERS) {
+    const items = container[list];
+    if (!Array.isArray(items)) {
+      continue;
+    }
+    for (const item of items) {
+      if (!isDict(item)) {
+        continue;
+      }
+      const title = asString(item[label]);
+      const href = asString(item.href) ?? asString(item.url);
+      const children = resolveDivisions(item, warnings);
+      if (children.length === 0) {
+        if (href) {
+          // Link-only anchors/tabs point at external targets — they belong in
+          // the navbar (handled by the config mapping), not the page tree.
+          continue;
+        }
+        warnings.push(`Navigation ${label} "${title ?? '(unnamed)'}" has no pages and was skipped.`);
+        continue;
+      }
+      if (origin === 'language') {
+        warnings.push(`Navigation ${label} "${title ?? '(unnamed)'}" was imported as a top-level group.`);
+      }
+      nodes.push({
+        kind: 'group',
+        title: title ?? 'Untitled',
+        origin,
+        children,
+        ...(origin === 'version' && item.default === true ? { isDefault: true } : {}),
+      });
+    }
+  }
+  const groups = container.groups;
+  if (Array.isArray(groups)) {
+    for (const item of groups) {
+      if (isDict(item)) {
+        nodes.push(...parseContainerObject(item, warnings));
+      }
+    }
+  }
+  nodes.push(...parsePagesArray(container.pages, warnings));
+  return nodes;
+};
+
+/** One object entry — a `{ group: … }` node or a bare container wrapper. */
+const parseContainerObject = (entry: Dict, warnings: string[]): NavNode[] => {
+  const groupTitle = asString(entry.group);
+  const children = resolveDivisions(entry, warnings);
+  if (groupTitle) {
+    const root = asString(entry.root);
+    if (root && !isExternalUrl(root)) {
+      const rootPath = normalizePagePath(root);
+      if (rootPath && !children.some((child) => child.kind === 'page' && child.path === rootPath)) {
+        children.unshift({ kind: 'page', path: rootPath });
+      }
+    }
+    if (children.length === 0) {
+      warnings.push(`Navigation group "${groupTitle}" has no pages and was skipped.`);
+      return [];
+    }
+    const extension = isDict(entry['x-nibleaf']) ? entry['x-nibleaf'] : undefined;
+    const stableSlug = (extension ? asString(extension.slug) : undefined) ?? asString(entry.slug);
+    return [
+      {
+        kind: 'group',
+        title: groupTitle,
+        origin: 'group',
+        icon: asString(entry.icon),
+        ...(stableSlug ? { slug: stableSlug } : {}),
+        children,
+      },
+    ];
+  }
+  return children;
+};
+
+/**
+ * Normalize either schema's `navigation` into an ordered tree.
+ * - mint.json: an array of `{ group, pages: [path | nested group] }`.
+ * - docs.json: an object of nested containers (languages/versions/tabs/anchors/
+ *   products/dropdowns/groups/pages/menu). Structural divisions become
+ *   top-level groups so the hierarchy survives the import.
+ */
+export const parseMintlifyNavigation = (config: Dict): MintlifyNavResult => {
+  const warnings: string[] = [];
+  const navigation = config.navigation;
+  if (Array.isArray(navigation)) {
+    const nodes: NavNode[] = [];
+    // Legacy versioned navigation: mint.json entries carrying a `version`
+    // string usually repeat the same group titles per version ("Guides" in v1
+    // AND v2), which would merge into one group on import. Wrap each version's
+    // entries under a synthetic per-version group (created once per distinct
+    // version, in first-seen order) so the versions stay separate.
+    const versionGroups = new Map<string, NavGroupNode>();
+    for (const entry of navigation) {
+      if (!isDict(entry)) {
+        continue;
+      }
+      const parsed = parseContainerObject(entry, warnings);
+      if (parsed.length === 0) {
+        continue;
+      }
+      const version = asString(entry.version);
+      if (!version) {
+        nodes.push(...parsed);
+        continue;
+      }
+      let wrapper = versionGroups.get(version);
+      if (!wrapper) {
+        wrapper = { kind: 'group', title: version, origin: 'version', children: [] };
+        versionGroups.set(version, wrapper);
+        nodes.push(wrapper);
+      }
+      wrapper.children.push(...parsed);
+    }
+    if (versionGroups.size > 0) {
+      warnings.push(`Detected versioned navigation: ${[...versionGroups.keys()].join(', ')}.`);
+    }
+    return { nodes, warnings };
+  }
+  if (isDict(navigation)) {
+    return { nodes: resolveDivisions(navigation, warnings), warnings };
+  }
+  warnings.push('The Mintlify config has no navigation section — no pages were imported from it.');
+  return { nodes: [], warnings };
+};
+
+export interface MintlifyVersionNavigation {
+  name: string;
+  isDefault: boolean;
+  nodes: NavNode[];
+}
+
+/** Split top-level Mintlify version containers into Nibleaf branch targets.
+ * Unversioned siblings remain available for the default branch. */
+export const partitionMintlifyVersions = (nodes: readonly NavNode[]) => {
+  const unversioned: NavNode[] = [];
+  const versions = new Map<string, Omit<MintlifyVersionNavigation, 'isDefault'> & { requestedDefault: boolean }>();
+  for (const node of nodes) {
+    if (node.kind !== 'group' || node.origin !== 'version') {
+      unversioned.push(node);
+      continue;
+    }
+    const existing = versions.get(node.title);
+    if (existing) {
+      existing.nodes.push(...node.children);
+      existing.requestedDefault ||= node.isDefault === true;
+    } else {
+      versions.set(node.title, { name: node.title, nodes: [...node.children], requestedDefault: node.isDefault === true });
+    }
+  }
+  const entries = [...versions.values()];
+  const defaultIndex = Math.max(
+    0,
+    entries.findIndex((entry) => entry.requestedDefault),
+  );
+  return {
+    unversioned,
+    versions: entries.map(({ requestedDefault: _requestedDefault, ...entry }, index) => ({ ...entry, isDefault: index === defaultIndex })),
+  };
+};
+
+/**
+ * Parse `navigation.languages` as real language partitions. The legacy
+ * `parseMintlifyNavigation` function intentionally keeps its historical
+ * flattening behaviour for callers that only understand one page tree; the
+ * importer uses this richer result and writes each partition to a Language.
+ *
+ * Language-specific Nibleaf SEO/chrome and project identity live in an
+ * optional `x-nibleaf` object on the language entry:
+ * `{ label, translation: { name, description }, config: { seo, search, ... } }`.
+ * Mintlify ignores this namespaced extension while Nibleaf can import it
+ * without guessing translated metadata.
+ */
+export const parseMintlifyLanguages = (config: Dict): MintlifyLanguageResult => {
+  const warnings: string[] = [];
+  const navigation = isDict(config.navigation) ? config.navigation : undefined;
+  if (!navigation || !Array.isArray(navigation.languages)) {
+    return { languages: [], warnings };
+  }
+
+  const candidates: Array<Omit<MintlifyLanguageNavigation, 'isDefault'> & { requestedDefault: boolean }> = [];
+  const seen = new Set<string>();
+  for (const entry of navigation.languages) {
+    if (!isDict(entry)) {
+      warnings.push('Skipped an unrecognized language navigation entry.');
+      continue;
+    }
+    const code = asString(entry.language);
+    if (!code) {
+      warnings.push('Skipped a language navigation entry without a language code.');
+      continue;
+    }
+    const normalizedCode = code.toLowerCase();
+    if (seen.has(normalizedCode)) {
+      warnings.push(`Skipped duplicate language navigation for "${code}".`);
+      continue;
+    }
+    seen.add(normalizedCode);
+    const nodes = resolveDivisions(entry, warnings);
+    if (nodes.length === 0) {
+      warnings.push(`Navigation language "${code}" has no pages and was skipped.`);
+      continue;
+    }
+
+    const extension = isDict(entry['x-nibleaf']) ? entry['x-nibleaf'] : undefined;
+    const rawConfig = extension && isDict(extension.config) ? extension.config : undefined;
+    const checkedConfig = rawConfig ? languageConfigSchema.safeParse(rawConfig) : undefined;
+    if (checkedConfig && !checkedConfig.success) {
+      warnings.push(`Skipped invalid x-nibleaf.config for language "${code}".`);
+    }
+    const rawTranslation = extension && isDict(extension.translation) ? extension.translation : undefined;
+    const name = rawTranslation ? asString(rawTranslation.name) : undefined;
+    const description = rawTranslation ? asString(rawTranslation.description) : undefined;
+    candidates.push({
+      code,
+      label: (extension ? asString(extension.label) : undefined) ?? LANGUAGE_LABELS[normalizedCode] ?? code,
+      direction: languageDirection(code),
+      enabled: entry.hidden !== true,
+      nodes,
+      requestedDefault: entry.default === true,
+      ...(checkedConfig?.success ? { config: checkedConfig.data } : {}),
+      ...(name || description ? { translation: { ...(name ? { name } : {}), ...(description ? { description } : {}) } } : {}),
+    });
+  }
+
+  if (candidates.length === 0) {
+    return { languages: [], warnings };
+  }
+  const explicitDefaults = candidates.map((candidate, index) => (candidate.requestedDefault ? index : -1)).filter((index) => index >= 0);
+  if (explicitDefaults.length > 1) {
+    warnings.push('Multiple navigation languages were marked default; the first one was used.');
+  }
+  const defaultIndex = explicitDefaults[0] ?? 0;
+  return {
+    languages: candidates.map(({ requestedDefault: _requestedDefault, ...candidate }, index) => ({
+      ...candidate,
+      isDefault: index === defaultIndex,
+    })),
+    warnings,
+  };
+};
+
+// ─── Config-file discovery ───────────────────────────────────────────────────
+
+/** Pick the config file from a repo listing: prefer docs.json, shallowest path wins. */
+export const findMintlifyConfigPath = (blobPaths: string[]): string | null => {
+  const byDepth = (a: string, b: string) => a.split('/').length - b.split('/').length;
+  const docs = blobPaths.filter((p) => p === 'docs.json' || p.endsWith('/docs.json')).sort(byDepth);
+  if (docs[0]) {
+    return docs[0];
+  }
+  const mint = blobPaths.filter((p) => p === 'mint.json' || p.endsWith('/mint.json')).sort(byDepth);
+  return mint[0] ?? null;
+};
+
+// ─── Site-chrome mapping (docs.json / mint.json → ProjectConfig) ─────────────
+
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const MAX_URL = 500;
+
+const label = (value: string): string => value.slice(0, 80);
+const safeUrl = (value: string | undefined, warnings: string[], what: string): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  if (value.length > MAX_URL) {
+    warnings.push(`Skipped ${what} — URL longer than ${MAX_URL} characters.`);
+    return undefined;
+  }
+  return value;
+};
+
+const pageSlug = (path: string): string => slugify(path.split('/').filter(Boolean).pop() ?? '') || 'page';
+
+/** Site path of the first leaf page under `nodes`, mirroring how the importer slugs the tree. */
+const firstLeafPath = (nodes: NavNode[], prefix: string[]): string | null => {
+  for (const node of nodes) {
+    if (node.kind === 'page') {
+      return [...prefix, pageSlug(node.path)].join('/');
+    }
+    const found = firstLeafPath(node.children, [...prefix, slugify(node.slug ?? node.title) || 'group']);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+};
+
+type NavLink = { label: string; href: string; external?: boolean };
+type NavAnchor = NavLink & { icon?: string };
+
+const toNavLink = (entry: unknown, warnings: string[]): NavLink | null => {
+  if (!isDict(entry)) {
+    return null;
+  }
+  const name = asString(entry.label) ?? asString(entry.name);
+  const href = safeUrl(asString(entry.href) ?? asString(entry.url), warnings, `navbar link "${name ?? '?'}"`);
+  if (!name || !href) {
+    return null;
+  }
+  return { label: label(name), href, ...(isExternalUrl(href) ? { external: true } : {}) };
+};
+
+const toNavAnchor = (entry: unknown, warnings: string[]): NavAnchor | null => {
+  const link = toNavLink(entry, warnings);
+  if (!link) {
+    return null;
+  }
+  const icon = isDict(entry) ? asString(entry.icon) : undefined;
+  return { ...link, ...(icon ? { icon: icon.slice(0, 40) } : {}) };
+};
+
+export interface MintlifyConfigMapping {
+  config: ProjectConfig;
+  warnings: string[];
+}
+
+export interface MintlifyConfigMappingOptions {
+  /** Resolve repo-relative branding paths to a browser-reachable source URL. */
+  resolveRepoAsset?: (path: string) => string | undefined;
+}
+
+/**
+ * Map the Mintlify site chrome onto our ProjectConfig:
+ * colors.primary → styling.primaryColor; logo/favicon → branding;
+ * navbar/topbarLinks/topbarCtaButton → navbar links + CTA; tabs → navbar.tabs;
+ * anchors → navbar.anchors; footer/footerSocials → footer; name → seo.metaTitle.
+ */
+export const mapMintlifyConfig = (config: Dict, nav: NavNode[], options: MintlifyConfigMappingOptions = {}): MintlifyConfigMapping => {
+  const warnings: string[] = [];
+  const patch: ProjectConfig = {};
+
+  // colors.primary → styling.primaryColor
+  const primary = isDict(config.colors) ? asString(config.colors.primary) : undefined;
+  if (primary) {
+    if (HEX_COLOR.test(primary)) {
+      patch.styling = { primaryColor: primary };
+    } else {
+      warnings.push(`Skipped colors.primary "${primary}" — not a 3/6-digit hex color.`);
+    }
+  }
+
+  // logo / favicon → branding. Only absolute http(s) URLs flow through: a
+  // repo-relative path (e.g. `/logo/light.svg`) points at a file inside the
+  // SOURCE repository — it does not exist on the published site, so writing it
+  // would render broken images. Those are skipped with one warning.
+  let skippedRepoRelativeBranding = false;
+  const brandingUrl = (value: string | undefined, what: string): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    if (!isExternalUrl(value)) {
+      const resolved = options.resolveRepoAsset?.(value);
+      if (!resolved) {
+        skippedRepoRelativeBranding = true;
+        return undefined;
+      }
+      return safeUrl(resolved, warnings, what);
+    }
+    return safeUrl(value, warnings, what);
+  };
+  const branding: NonNullable<ProjectConfig['branding']> = {};
+  const logo = asString(config.logo);
+  if (logo) {
+    const href = brandingUrl(logo, 'logo');
+    if (href) {
+      branding.logoLight = href;
+      branding.logoDark = href;
+    }
+  } else if (isDict(config.logo)) {
+    const light = brandingUrl(asString(config.logo.light), 'light logo');
+    const dark = brandingUrl(asString(config.logo.dark), 'dark logo');
+    if (light) {
+      branding.logoLight = light;
+    }
+    if (dark) {
+      branding.logoDark = dark;
+    }
+  }
+  const favicon = asString(config.favicon) ?? (isDict(config.favicon) ? asString(config.favicon.light) : undefined);
+  const faviconUrl = brandingUrl(asString(favicon), 'favicon');
+  if (faviconUrl) {
+    branding.favicon = faviconUrl;
+  }
+  if (skippedRepoRelativeBranding) {
+    warnings.push('Skipped repo-relative logo/favicon paths — upload your branding under Settings → Branding instead.');
+  }
+  if (Object.keys(branding).length > 0) {
+    patch.branding = branding;
+  }
+
+  // navbar links + CTA (docs.json `navbar`, mint.json `topbarLinks`/`topbarCtaButton`)
+  const navbar: NonNullable<ProjectConfig['navbar']> = {};
+  const navbarSection = isDict(config.navbar) ? config.navbar : undefined;
+  const rawLinks = navbarSection?.links ?? config.topbarLinks;
+  if (Array.isArray(rawLinks)) {
+    const links = rawLinks.map((entry) => toNavLink(entry, warnings)).filter((link): link is NavLink => link !== null);
+    if (links.length > 0) {
+      navbar.links = links.slice(0, 20);
+    }
+  }
+  const cta = navbarSection?.primary ?? config.topbarCtaButton;
+  if (isDict(cta)) {
+    const href = safeUrl(asString(cta.href) ?? asString(cta.url), warnings, 'navbar CTA');
+    const name = asString(cta.label) ?? asString(cta.name) ?? (asString(cta.type) === 'github' ? 'GitHub' : undefined);
+    if (href && name) {
+      navbar.ctaLabel = label(name);
+      navbar.ctaUrl = href;
+    }
+  }
+
+  // tabs → navbar.tabs: mint.json tabs carry urls; docs.json tabs became groups,
+  // so their hrefs point at the first imported page of each tab.
+  const tabs: NavLink[] = [];
+  if (Array.isArray(config.tabs)) {
+    for (const entry of config.tabs) {
+      if (!isDict(entry)) {
+        continue;
+      }
+      const name = asString(entry.name) ?? asString(entry.tab);
+      const url = asString(entry.url) ?? asString(entry.href);
+      if (!name || !url) {
+        continue;
+      }
+      const href = safeUrl(isExternalUrl(url) ? url : `/${url.replace(/^\/+/, '')}`, warnings, `tab "${name}"`);
+      if (href) {
+        tabs.push({ label: label(name), href, ...(isExternalUrl(href) ? { external: true } : {}) });
+      }
+    }
+  }
+  for (const node of nav) {
+    if (node.kind === 'group' && node.origin === 'tab') {
+      const leaf = firstLeafPath(node.children, [slugify(node.slug ?? node.title) || 'group']);
+      if (leaf) {
+        tabs.push({ label: label(node.title), href: `/${leaf}` });
+      }
+    }
+  }
+  if (tabs.length > 0) {
+    navbar.tabs = tabs.slice(0, 10);
+  }
+
+  // anchors → navbar.anchors (mint.json `anchors`, docs.json `navigation.global.anchors`)
+  const navigation = isDict(config.navigation) ? config.navigation : undefined;
+  const globalAnchors = navigation && isDict(navigation.global) ? navigation.global.anchors : undefined;
+  const rawAnchors = Array.isArray(config.anchors) ? config.anchors : Array.isArray(globalAnchors) ? globalAnchors : undefined;
+  if (rawAnchors) {
+    const anchors = rawAnchors
+      .map((entry) => (isDict(entry) ? toNavAnchor({ ...entry, name: entry.name ?? entry.anchor }, warnings) : null))
+      .filter((anchor): anchor is NavAnchor => anchor !== null);
+    if (anchors.length > 0) {
+      navbar.anchors = anchors.slice(0, 12);
+    }
+  }
+  if (Object.keys(navbar).length > 0) {
+    patch.navbar = navbar;
+  }
+
+  // footer / footerSocials → footer (github / x|twitter / linkedin)
+  const socials =
+    isDict(config.footer) && isDict(config.footer.socials) ? config.footer.socials : isDict(config.footerSocials) ? config.footerSocials : undefined;
+  if (socials) {
+    const footer: NonNullable<ProjectConfig['footer']> = {};
+    const github = safeUrl(asString(socials.github), warnings, 'footer GitHub link');
+    const x = safeUrl(asString(socials.x) ?? asString(socials.twitter), warnings, 'footer X link');
+    const linkedin = safeUrl(asString(socials.linkedin), warnings, 'footer LinkedIn link');
+    if (github) {
+      footer.github = github;
+    }
+    if (x) {
+      footer.x = x;
+    }
+    if (linkedin) {
+      footer.linkedin = linkedin;
+    }
+    if (Object.keys(footer).length > 0) {
+      patch.footer = footer;
+    }
+  }
+
+  // name → seo.metaTitle (the closest thing we have to a site display name)
+  const name = asString(config.name);
+  if (name) {
+    patch.seo = { metaTitle: name.slice(0, 160) };
+  }
+
+  const checked = projectConfigSchema.safeParse(patch);
+  if (!checked.success) {
+    warnings.push('Some site settings in the Mintlify config could not be mapped and were skipped.');
+    return { config: {}, warnings };
+  }
+  return { config: checked.data, warnings };
+};
+
+// ─── Non-destructive config merge ────────────────────────────────────────────
+
+const isEmptyValue = (value: unknown): boolean =>
+  value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
+
+export interface ConfigMergeResult {
+  merged: ProjectConfig;
+  /** Dot-paths that were filled in (previously empty). */
+  set: string[];
+  /** Dot-paths skipped because the project already configured them. */
+  kept: string[];
+}
+
+/**
+ * Merge an imported config patch over the project's config WITHOUT clobbering:
+ * a key is only written when the current value is empty (undefined/null/''/[]).
+ */
+export const mergeConfigPreservingExisting = (existing: ProjectConfig | null | undefined, incoming: ProjectConfig): ConfigMergeResult => {
+  const merged: Record<string, unknown> = { ...(existing ?? {}) };
+  const set: string[] = [];
+  const kept: string[] = [];
+  for (const [section, values] of Object.entries(incoming)) {
+    if (!isDict(values)) {
+      continue;
+    }
+    const current = isDict(merged[section]) ? { ...(merged[section] as Dict) } : {};
+    for (const [key, value] of Object.entries(values)) {
+      if (isEmptyValue(value)) {
+        continue;
+      }
+      if (isEmptyValue(current[key])) {
+        current[key] = value;
+        set.push(`${section}.${key}`);
+      } else {
+        kept.push(`${section}.${key}`);
+      }
+    }
+    if (Object.keys(current).length > 0) {
+      merged[section] = current;
+    }
+  }
+  return { merged: merged as ProjectConfig, set, kept };
+};

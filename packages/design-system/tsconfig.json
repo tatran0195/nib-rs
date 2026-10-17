@@ -1,0 +1,10 @@
+{
+  "extends": "@nibleaf/tsconfig/react.json",
+  "compilerOptions": {
+    "paths": {
+      "@nibleaf/design-system/*": ["./src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", ".cache", ".turbo"]
+}

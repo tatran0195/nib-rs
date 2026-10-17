@@ -1,0 +1,488 @@
+import { createJob, QueueNames } from '@nibleaf/bullmq';
+import type { PublishDeploymentJobData } from '@nibleaf/bullmq/jobs/publish';
+import {
+  type AnalyticsPayload,
+  buildAnalyticsEvent,
+  keys as clickHouseKeys,
+  clickHouseWritesEnabled,
+  deterministicAnalyticsEventId,
+} from '@nibleaf/clickhouse';
+import { type Deployment, Prisma, type Project, prisma } from '@nibleaf/database';
+import { createLogger } from '@nibleaf/logger';
+import { projectAddonRowsForDelivery } from '@nibleaf/shared/addons';
+import { summarizeRedirectIssues, validateSnapshotRedirects } from '@nibleaf/shared/redirects';
+import { buildSnapshot } from '@nibleaf/shared/site';
+import type { Job } from 'bullmq';
+import { env } from '../env';
+import { notifyDeployment } from '../lib/notify';
+import { recordPublishReady } from '../lib/publish-activation';
+import { DurableUsageEnqueueError, enqueueAnalyticsEvent } from '../lib/usage-ingest';
+
+const log = createLogger({ processor: 'publish' });
+
+export const trackPublishLifecycle = async (
+  project: { id: string; organizationId: string; accessMode: string; config: unknown },
+  deploymentId: string,
+  payload: AnalyticsPayload,
+  occurredAt: string,
+): Promise<void> => {
+  const config = clickHouseKeys();
+  if (!clickHouseWritesEnabled(config.ANALYTICS_MODE) || !config.ANALYTICS_HASH_SALT) return;
+  const projectConfig = project.config as { visibility?: string } | null;
+  const visibility = project.accessMode === 'PUBLIC' && projectConfig?.visibility !== 'private' ? 'public' : 'private';
+  const event = buildAnalyticsEvent(
+    {
+      eventId: deterministicAnalyticsEventId(`${deploymentId}:${payload.name}`),
+      occurredAt,
+      consentState: 'not_required',
+      payload,
+    },
+    {
+      tenantId: project.organizationId,
+      projectId: project.id,
+      siteId: project.id,
+      deploymentId,
+      source: 'worker',
+      privacy: { visibility, allowCampaignDimensions: false, allowRawPublicSearchQueries: false },
+      hashSalt: config.ANALYTICS_HASH_SALT,
+    },
+  );
+  try {
+    await enqueueAnalyticsEvent(event);
+  } catch (error) {
+    if (!(error instanceof DurableUsageEnqueueError) || !error.outboxPersisted) throw error;
+    log.warn({ deploymentId, eventId: event.eventId }, 'publish analytics enqueue deferred to the durable usage outbox');
+  }
+};
+
+const siteUrlFor = (projectId: string): string | undefined => (env.APP_URL ? `${env.APP_URL.replace(/\/$/, '')}/sites/${projectId}` : undefined);
+
+/** Fire-and-forget platform funnel event (mirrors apps/server platform-events —
+ *  the worker can't import server actions). Never throws into the publish flow. */
+const logPlatformEvent = (type: string, data: { userId?: string | null; projectId?: string; metadata?: Record<string, unknown> }) =>
+  prisma.platformEvent
+    .create({
+      data: {
+        type,
+        userId: data.userId ?? null,
+        projectId: data.projectId ?? null,
+        ...(data.metadata ? { metadata: data.metadata as Prisma.InputJsonValue } : {}),
+      },
+    })
+    .catch(() => undefined);
+
+type ProjectWithConfig = { config: unknown };
+type PublishPage = {
+  id: string;
+  title: string;
+  kind: string;
+  path: string;
+  content: string;
+  hidden?: boolean | null;
+  languageCode: string;
+  branchId: string;
+};
+
+/** One structured check failure, persisted as `Deployment.errorDetails` JSON so
+ *  the dashboard can render a per-page failure list. */
+interface PublishIssue {
+  type: 'broken-link' | 'grammar';
+  pageTitle: string;
+  pagePath: string;
+  detail: string;
+}
+
+/** A check failure that blocks the publish, carrying the structured issues. */
+class PublishChecksError extends Error {
+  readonly issues: PublishIssue[];
+  constructor(message: string, issues: PublishIssue[]) {
+    super(message);
+    this.name = 'PublishChecksError';
+    this.issues = issues;
+  }
+}
+
+const objectValue = (value: unknown): Record<string, unknown> =>
+  Object.prototype.toString.call(value) === '[object Object]' ? (value as Record<string, unknown>) : {};
+
+const normalizedPagePath = (path: string): string => path.replace(/^\/+|\/+$/g, '').replace(/\.(mdx?|html)$/i, '');
+
+const hasAssetExtension = (path: string): boolean => /\.[a-z0-9]{2,8}$/i.test(path) && !/\.(mdx?|html)$/i.test(path);
+
+const internalLinkTarget = (href: string, currentPath: string): string | null => {
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//') || trimmed.startsWith('{')) {
+    return null;
+  }
+
+  const withoutHash = trimmed.split('#')[0]?.split('?')[0]?.trim() ?? '';
+  if (!withoutHash || withoutHash === '/') {
+    return null;
+  }
+  if (hasAssetExtension(withoutHash)) {
+    return null;
+  }
+
+  const base = currentPath.includes('/') ? currentPath.split('/').slice(0, -1) : [];
+  const parts = withoutHash.startsWith('/') ? [] : [...base];
+  for (const segment of withoutHash.replace(/^\/+/, '').split('/')) {
+    if (!segment || segment === '.') {
+      continue;
+    }
+    if (segment === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+
+  return normalizedPagePath(parts.join('/'));
+};
+
+const markdownLinks = (content: string): string[] => {
+  const links: string[] = [];
+  for (const match of content.matchAll(/(?<!!)\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g)) {
+    if (match[1]) {
+      links.push(match[1]);
+    }
+  }
+  for (const match of content.matchAll(/\bhref=["']([^"']+)["']/g)) {
+    if (match[1]) {
+      links.push(match[1]);
+    }
+  }
+  return links;
+};
+
+const stripCodeForCopyChecks = (content: string): string =>
+  content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/<pre[\s\S]*?<\/pre>/gi, ' ')
+    .replace(/<code[\s\S]*?<\/code>/gi, ' ');
+
+const GRAMMAR_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
+  { pattern: /\bteh\b/i, message: 'Use "the" instead of "teh".' },
+  { pattern: /\brecieve\b/i, message: 'Use "receive" instead of "recieve".' },
+  { pattern: /\bseperate\b/i, message: 'Use "separate" instead of "seperate".' },
+  { pattern: /\boccured\b/i, message: 'Use "occurred" instead of "occured".' },
+  { pattern: /\bdefinately\b/i, message: 'Use "definitely" instead of "definately".' },
+  { pattern: /\bpublically\b/i, message: 'Use "publicly" instead of "publically".' },
+  { pattern: /\bcan not\b/i, message: 'Prefer "cannot" in documentation copy.' },
+  { pattern: /\bthis are\b/i, message: 'Use "this is" or "these are".' },
+];
+
+const grammarIssues = (content: string): string[] => {
+  const copy = stripCodeForCopyChecks(content);
+  const issues: string[] = [];
+  for (const rule of GRAMMAR_PATTERNS) {
+    if (rule.pattern.test(copy)) {
+      issues.push(rule.message);
+    }
+  }
+  return issues;
+};
+
+/**
+ * Publish-time add-on checks. The self-hosted free target treats CI checks as
+ * the umbrella toggle and runs concrete local gates without hosted integrations.
+ * Returns structured issues instead of throwing so the caller can persist them
+ * as `Deployment.errorDetails`. Broken links ALWAYS block (when enabled);
+ * `skipGrammarChecks` lets a user publish past the grammar linter only.
+ */
+export function collectPublishIssues(
+  project: ProjectWithConfig,
+  pages: PublishPage[],
+  options: { skipGrammarChecks?: boolean } = {},
+): PublishIssue[] {
+  const addons = objectValue(objectValue(project.config).addons);
+  if (addons.ciChecks === false) {
+    return [];
+  }
+  const issues: PublishIssue[] = [];
+
+  if (addons.brokenLinks !== false) {
+    const pathsByScope = new Map<string, Set<string>>();
+    for (const page of pages) {
+      if (page.kind !== 'PAGE' || page.hidden) {
+        continue;
+      }
+      const scope = `${page.languageCode}:${page.branchId}`;
+      const set = pathsByScope.get(scope) ?? new Set<string>();
+      set.add(normalizedPagePath(page.path));
+      pathsByScope.set(scope, set);
+    }
+
+    for (const page of pages) {
+      if (page.kind !== 'PAGE' || page.hidden) {
+        continue;
+      }
+      const currentPath = normalizedPagePath(page.path);
+      for (const href of markdownLinks(page.content)) {
+        const target = internalLinkTarget(href, currentPath);
+        if (!target || target === 'changelog') {
+          continue;
+        }
+        const languages = new URLSearchParams(href.split('#')[0]?.split('?')[1] ?? '').getAll('lang');
+        const targetLanguage = languages.length === 0 ? page.languageCode : languages.length === 1 ? languages[0] : '';
+        // Only an existing visible target in this same project/branch can
+        // satisfy a locale switch. Unknown/ambiguous locales remain broken.
+        const scopePaths = pathsByScope.get(`${targetLanguage}:${page.branchId}`) ?? new Set<string>();
+        if (!scopePaths.has(target)) {
+          issues.push({
+            type: 'broken-link',
+            pageTitle: page.title,
+            pagePath: currentPath || '/',
+            detail: `Link to "${href}" does not match any page.`,
+          });
+        }
+      }
+    }
+  }
+
+  if (addons.grammarLinter === true && options.skipGrammarChecks !== true) {
+    for (const page of pages) {
+      if (page.kind !== 'PAGE' || page.hidden) {
+        continue;
+      }
+      const currentPath = normalizedPagePath(page.path);
+      for (const issue of grammarIssues(page.content)) {
+        issues.push({ type: 'grammar', pageTitle: page.title, pagePath: currentPath || '/', detail: issue });
+      }
+    }
+  }
+
+  return issues;
+}
+
+/** Human summary for `Deployment.error` (the structured list goes to errorDetails). */
+const summarizeIssues = (issues: PublishIssue[]): string => {
+  const broken = issues.filter((issue) => issue.type === 'broken-link');
+  const grammar = issues.filter((issue) => issue.type === 'grammar');
+  const parts: string[] = [];
+  if (broken.length > 0) {
+    const sample = broken
+      .slice(0, 8)
+      .map((issue) => `${issue.pagePath} -> ${issue.detail}`)
+      .join('; ');
+    parts.push(`Broken internal links found (${broken.length}): ${sample}`);
+  }
+  if (grammar.length > 0) {
+    const sample = grammar
+      .slice(0, 8)
+      .map((issue) => `${issue.pagePath}: ${issue.detail}`)
+      .join('; ');
+    parts.push(`Grammar lint issues found (${grammar.length}): ${sample}`);
+  }
+  return parts.join(' | ');
+};
+
+/** Persisted `errorDetails` is capped so a check failure on a large site can't
+ *  ship a multi-MB JSONB blob to the dashboard (which renders one <li> per
+ *  issue). The array shape the dashboard consumes ([{type,pageTitle,pagePath,
+ *  detail}]) is preserved; when truncated, a final synthetic entry records the
+ *  omitted count. Its `type` mirrors whether any broken link is present so the
+ *  dashboard's grammar-only "Publish anyway" gate stays correct — broken links
+ *  always block, so a truncated set that still contains one must not read as
+ *  grammar-only. */
+const MAX_PERSISTED_ISSUES = 100;
+
+const capIssues = (issues: PublishIssue[]): PublishIssue[] => {
+  if (issues.length <= MAX_PERSISTED_ISSUES) {
+    return issues;
+  }
+  const omitted = issues.length - MAX_PERSISTED_ISSUES;
+  const type: PublishIssue['type'] = issues.some((issue) => issue.type === 'broken-link') ? 'broken-link' : 'grammar';
+  return [
+    ...issues.slice(0, MAX_PERSISTED_ISSUES),
+    { type, pageTitle: 'Additional issues', pagePath: '', detail: `…and ${omitted} more issue${omitted === 1 ? '' : 's'} not shown.` },
+  ];
+};
+
+/**
+ * Build an immutable snapshot of the project's docs and mark the deployment
+ * READY. The live site and search index are served from this snapshot.
+ */
+async function completePublish(
+  job: PublishDeploymentJobData,
+  ready: Pick<Deployment, 'createdById' | 'version' | 'completedAt' | 'pagesCount'>,
+  project: Pick<Project, 'id' | 'name' | 'organizationId' | 'accessMode' | 'config'>,
+  occurredAt: string,
+) {
+  await trackPublishLifecycle(
+    project,
+    job.deploymentId,
+    {
+      name: 'publish_completed',
+      operationId: job.deploymentId,
+      sourceType: job.auto ? 'api' : 'ui',
+      itemCount: ready.pagesCount,
+    },
+    occurredAt,
+  );
+  await createJob(
+    QueueNames.SEARCH,
+    { name: 'index-deployment', data: { projectId: job.projectId, deploymentId: job.deploymentId } },
+    { jobId: `search-${job.deploymentId}` },
+  ).catch((error) => log.warn({ projectId: job.projectId, deploymentId: job.deploymentId, error }, 'could not enqueue hybrid search indexing'));
+  await recordPublishReady(job, ready);
+  await notifyDeployment({
+    deploymentId: job.deploymentId,
+    projectId: job.projectId,
+    projectName: project.name,
+    version: ready.version,
+    outcome: 'ready',
+    siteUrl: siteUrlFor(job.projectId),
+    locale: job.locale,
+  });
+  return { pages: ready.pagesCount };
+}
+
+export async function handlePublishJobs(job: Job<PublishDeploymentJobData>): Promise<{ pages: number }> {
+  const { deploymentId, projectId, skipGrammarChecks, auto, locale } = job.data;
+  const lifecycleOccurredAt = new Date(job.timestamp ?? Date.now()).toISOString();
+  log.info({ deploymentId, projectId }, 'building deployment');
+
+  const deployment = await prisma.deployment.findFirst({ where: { id: deploymentId, projectId } });
+  if (!deployment) throw new Error('Deployment does not belong to the requested project');
+  // A retry after READY repairs event delivery without rebuilding a snapshot
+  // from a newer draft or emitting another activation.
+  if (deployment.status === 'READY') {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, name: true, organizationId: true, accessMode: true, config: true },
+    });
+    if (!project) throw new Error('Published project no longer exists');
+    return completePublish(job.data, deployment, project, lifecycleOccurredAt);
+  }
+  await prisma.deployment.update({ where: { id: deploymentId, projectId }, data: { status: 'BUILDING' } });
+  let snapshotReady = false;
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: {
+        languages: { orderBy: { position: 'asc' }, include: { projectTranslations: { take: 1 } } },
+        branches: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
+        openApiDocument: true,
+        addons: { select: { key: true, enabled: true, config: true } },
+        organization: {
+          select: {
+            usagePlan: {
+              select: {
+                status: true,
+                effectiveAt: true,
+                expiresAt: true,
+                plan: {
+                  select: {
+                    key: true,
+                    active: true,
+                    entitlements: { select: { capabilityKey: true, enabled: true, meter: { select: { active: true } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!project) {
+      throw new Error(`project ${projectId} not found`);
+    }
+    await trackPublishLifecycle(
+      project,
+      deploymentId,
+      { name: 'publish_started', operationId: deploymentId, sourceType: auto ? 'api' : 'ui' },
+      lifecycleOccurredAt,
+    );
+    // Moderation backstop: a taken-down site must never build a new deployment,
+    // even if a publish request slipped past the API-side check.
+    if (project.takedownAt) {
+      throw new Error('This site has been taken down by the platform moderators and cannot be published.');
+    }
+    // Publish every branch as an addressable docs version. This keeps v1 live
+    // while v2 is being authored, and visitors can switch versions on the site.
+    const branchIds = project.branches.map((branch) => branch.id);
+    const pages = await prisma.page.findMany({
+      where: { projectId, branchId: { in: branchIds } },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+      include: { language: { select: { code: true } } },
+    });
+    const pageRows = pages.map(({ language, createdAt, updatedAt, ...page }) => ({
+      ...page,
+      languageCode: language.code,
+      createdAt: createdAt.toISOString(),
+      updatedAt: updatedAt.toISOString(),
+    }));
+    const draftSnapshot = buildSnapshot(
+      { ...project, addons: projectAddonRowsForDelivery(project.addons, project.organization.usagePlan) },
+      pageRows,
+      new Date().toISOString(),
+    );
+    const issues = collectPublishIssues(draftSnapshot.project, pageRows, { skipGrammarChecks: skipGrammarChecks === true });
+    if (issues.length > 0) {
+      throw new PublishChecksError(summarizeIssues(issues), issues);
+    }
+    const redirectValidation = validateSnapshotRedirects(draftSnapshot);
+    if (redirectValidation.issues.length > 0) {
+      throw new Error(summarizeRedirectIssues(redirectValidation.issues));
+    }
+    const snapshot = redirectValidation.snapshot;
+    const pageCount = pages.filter((page) => page.kind === 'PAGE').length;
+
+    const ready = await prisma.deployment.update({
+      where: { id: deploymentId, projectId },
+      data: { status: 'READY', snapshot: snapshot as unknown as object, pagesCount: pageCount, errorDetails: Prisma.DbNull, completedAt: new Date() },
+    });
+    snapshotReady = true;
+    log.info({ deploymentId, pageCount }, 'deployment ready');
+    return await completePublish(job.data, ready, project, lifecycleOccurredAt);
+  } catch (error) {
+    // A delivery failure after READY must not revoke the published snapshot.
+    // Let the job retry the durable receipt using the READY fast path above.
+    if (snapshotReady) throw error;
+    const failed = await prisma.deployment.update({
+      where: { id: deploymentId, projectId },
+      data: {
+        status: 'FAILED',
+        error: error instanceof Error ? error.message : String(error),
+        // ALWAYS overwrite errorDetails: a retry that fails with a transient
+        // infra error (after attempt 1 recorded check issues) must clear the
+        // stale grammar/link list, or the dashboard offers "Publish anyway" for
+        // a connection failure.
+        errorDetails: error instanceof PublishChecksError ? (capIssues(error.issues) as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+      },
+    });
+    const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
+    const analyticsProject = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, organizationId: true, accessMode: true, config: true },
+    });
+    if (analyticsProject) {
+      await trackPublishLifecycle(
+        analyticsProject,
+        deploymentId,
+        {
+          name: 'publish_failed',
+          operationId: deploymentId,
+          outcomeReason: error instanceof PublishChecksError ? 'validation' : 'runtime',
+        },
+        lifecycleOccurredAt,
+      );
+    }
+    await logPlatformEvent('publish_failed', {
+      userId: failed.createdById,
+      projectId,
+      metadata: { auto: auto === true, version: failed.version, checksFailed: error instanceof PublishChecksError },
+    });
+    await notifyDeployment({
+      deploymentId,
+      projectId,
+      projectName: proj?.name ?? 'Your site',
+      version: failed.version,
+      outcome: 'failed',
+      error: failed.error ?? undefined,
+      locale,
+    });
+    throw error;
+  }
+}

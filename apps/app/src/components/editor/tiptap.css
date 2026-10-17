@@ -1,0 +1,708 @@
+/* TipTap WYSIWYG styles — scoped to .ProseMirror, matching the Nibleaf design.
+   Uses the app's Tailwind color tokens (var(--color-*)) so it follows light/dark. */
+
+.pl-editor {
+  width: 100%;
+}
+
+/* Rich text fills the available workspace: controls stay in a single top bar
+   and the document canvas scrolls directly beneath it. */
+.pl-editor-document {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--color-card);
+}
+
+.pl-editor-document .pl-document-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  background: var(--color-card);
+}
+
+.pl-editor-document .pl-document-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  background: var(--color-card);
+  padding: clamp(1.5rem, 3vw, 2.5rem) clamp(1.25rem, 4vw, 3.5rem) 7.5rem;
+}
+
+.pl-editor-document .pl-document-title {
+  margin-bottom: 2rem;
+}
+
+.pl-editor.pl-editor-document .ProseMirror {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Comment anchors (Figma-style): the commented text is highlighted; the focused
+   comment is stronger. In comment mode the canvas shows a comment cursor. */
+.pl-editor .ProseMirror .pl-comment-highlight {
+  background: rgba(250, 204, 21, 0.25);
+  box-shadow: inset 0 -2px 0 rgba(245, 158, 11, 0.75);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.pl-editor .ProseMirror .pl-comment-active {
+  background: rgba(250, 204, 21, 0.45);
+}
+.pl-editor.is-comment-mode .ProseMirror {
+  cursor: text;
+  caret-color: transparent;
+  user-select: text;
+}
+.pl-editor.is-comment-mode .ProseMirror ::selection {
+  background: color-mix(in oklch, var(--color-primary) 28%, transparent);
+}
+
+/* Base size/leading/fonts follow the project's typography config (the same
+ * --typeset-* variables the published site uses — set on the editor wrapper by
+ * the editor route), so authors see the reading rhythm they configured. */
+/* biome-ignore lint/style/noDescendingSpecificity: comment-mode overrides intentionally have higher specificity. */
+.pl-editor .ProseMirror {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 8px 0 140px;
+  outline: none;
+  color: var(--color-foreground);
+  font-family: var(--typeset-font-body, inherit);
+  font-size: var(--typeset-size, 16px);
+  line-height: var(--typeset-leading, 1.7);
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.pl-editor .ProseMirror > * {
+  max-width: 100%;
+}
+
+.pl-editor:lang(ar) .ProseMirror,
+.pl-editor:lang(fa) .ProseMirror,
+.pl-editor:lang(ur) .ProseMirror {
+  font-family: var(
+    --font-arabic,
+    "Noto Sans Arabic Variable",
+    "Noto Sans Arabic",
+    Tahoma,
+    Arial,
+    sans-serif
+  );
+}
+
+.pl-editor .ProseMirror > * + * {
+  margin-top: 0.6em;
+}
+
+/* Headings — em-scaled so they track the configured base size (2em/1.5em/
+ * 1.1875em ≈ the previous 32/24/19px at the 16px default). */
+.pl-editor .ProseMirror h1 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 2em;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  margin: 1.2em 0 0.25em;
+}
+.pl-editor .ProseMirror h2 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 1.5em;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.3;
+  margin: 1.7em 0 0.3em;
+}
+.pl-editor .ProseMirror h3 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 1.1875em;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 1.4em 0 0.2em;
+}
+.pl-editor .ProseMirror h4 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 1.0625em;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 1.3em 0 0.2em;
+}
+.pl-editor .ProseMirror h5 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.5;
+  margin: 1.2em 0 0.15em;
+}
+.pl-editor .ProseMirror h6 {
+  font-family: var(--typeset-font-heading, inherit);
+  font-size: 0.9375em;
+  font-weight: 600;
+  line-height: 1.5;
+  margin: 1.2em 0 0.15em;
+  color: var(--color-muted-foreground);
+}
+
+/* Paragraphs */
+.pl-editor .ProseMirror p {
+  font-size: 1em;
+  line-height: inherit;
+  margin: 0.2em 0;
+}
+
+/* Lists */
+.pl-editor .ProseMirror ul,
+.pl-editor .ProseMirror ol {
+  padding-inline-start: 1.4em;
+  margin: 0.4em 0;
+}
+.pl-editor .ProseMirror ul {
+  list-style: disc;
+}
+.pl-editor .ProseMirror ol {
+  list-style: decimal;
+}
+.pl-editor .ProseMirror li {
+  margin: 0.2em 0;
+}
+.pl-editor .ProseMirror li::marker {
+  color: var(--color-primary);
+}
+
+/* Task lists */
+.pl-editor .ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-inline-start: 0.2em;
+}
+.pl-editor .ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6em;
+}
+.pl-editor .ProseMirror ul[data-type="taskList"] li > label {
+  margin-top: 0.32em;
+  user-select: none;
+}
+.pl-editor .ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pl-editor .ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+/* Blockquote */
+.pl-editor .ProseMirror blockquote {
+  border-inline-start: 3px solid
+    color-mix(in oklch, var(--color-border), var(--color-foreground) 20%);
+  padding-inline-start: 16px;
+  margin: 0.6em 0;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+/* Horizontal rule / divider */
+.pl-editor .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.2em 0;
+}
+.pl-editor .ProseMirror hr.ProseMirror-selectednode {
+  border-top-color: var(--color-primary);
+}
+
+/* Inline code */
+.pl-editor .ProseMirror code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  direction: ltr;
+  unicode-bidi: isolate;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+}
+
+.pl-editor[dir="rtl"] .ProseMirror h1,
+.pl-editor[dir="rtl"] .ProseMirror h2,
+.pl-editor[dir="rtl"] .ProseMirror h3,
+.pl-editor[dir="rtl"] .ProseMirror h4,
+.pl-editor[dir="rtl"] .ProseMirror h5,
+.pl-editor[dir="rtl"] .ProseMirror h6 {
+  letter-spacing: normal;
+}
+
+/* Mark / highlight */
+.pl-editor .ProseMirror mark {
+  background: color-mix(in oklch, var(--color-primary) 22%, transparent);
+  border-radius: 3px;
+  padding: 0.05em 0.15em;
+}
+
+/* Links */
+.pl-editor .ProseMirror a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* Code block — dark chrome with a language label bar.
+   The label is driven by the node's data-language attribute via ::before. */
+.pl-editor .ProseMirror pre {
+  position: relative;
+  direction: ltr;
+  background: #0f0f14;
+  border-radius: 12px;
+  margin: 0.8em 0;
+  padding: 42px 16px 16px;
+  overflow-x: auto;
+  color: #d6d6e2;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.pl-editor .ProseMirror pre::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-bottom: 1px solid #232330;
+  color: #8a8a98;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.pl-editor .ProseMirror pre:not([data-language])::before,
+.pl-editor .ProseMirror pre[data-language="null"]::before {
+  content: "code";
+}
+.pl-editor .ProseMirror pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* lowlight / highlight.js token colors (dark theme) */
+.pl-editor .ProseMirror pre .hljs-comment,
+.pl-editor .ProseMirror pre .hljs-quote {
+  color: #6a6a78;
+  font-style: italic;
+}
+.pl-editor .ProseMirror pre .hljs-keyword,
+.pl-editor .ProseMirror pre .hljs-selector-tag,
+.pl-editor .ProseMirror pre .hljs-literal,
+.pl-editor .ProseMirror pre .hljs-type {
+  color: #c792ea;
+}
+.pl-editor .ProseMirror pre .hljs-string,
+.pl-editor .ProseMirror pre .hljs-title,
+.pl-editor .ProseMirror pre .hljs-name,
+.pl-editor .ProseMirror pre .hljs-attr {
+  color: #c3e88d;
+}
+.pl-editor .ProseMirror pre .hljs-number,
+.pl-editor .ProseMirror pre .hljs-symbol,
+.pl-editor .ProseMirror pre .hljs-bullet {
+  color: #f78c6c;
+}
+.pl-editor .ProseMirror pre .hljs-function,
+.pl-editor .ProseMirror pre .hljs-built_in,
+.pl-editor .ProseMirror pre .hljs-attribute {
+  color: #82aaff;
+}
+.pl-editor .ProseMirror pre .hljs-tag,
+.pl-editor .ProseMirror pre .hljs-meta {
+  color: #89ddff;
+}
+
+/* Callout — colored wrapper with an icon column. */
+.pl-editor .ProseMirror .pl-callout {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin: 0.7em 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-accent);
+}
+.pl-editor .ProseMirror .pl-callout .pl-callout-icon {
+  font-size: 16px;
+  line-height: 1.5;
+  user-select: none;
+}
+.pl-editor .ProseMirror .pl-callout .pl-callout-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pl-editor .ProseMirror .pl-callout .pl-callout-body > * {
+  margin: 0;
+}
+.pl-editor .ProseMirror .pl-callout[data-variant="warning"] {
+  border-color: color-mix(in oklch, #d9730d 35%, var(--color-border));
+  background: color-mix(in oklch, #d9730d 10%, var(--color-card));
+}
+.pl-editor .ProseMirror .pl-callout[data-variant="danger"] {
+  border-color: color-mix(in oklch, #dc2626 35%, var(--color-border));
+  background: color-mix(in oklch, #dc2626 10%, var(--color-card));
+}
+.pl-editor .ProseMirror .pl-callout[data-variant="tip"] {
+  border-color: color-mix(in oklch, #16a34a 35%, var(--color-border));
+  background: color-mix(in oklch, #16a34a 10%, var(--color-card));
+}
+/* info = primary tint, check = neutral/stone tint — mirrors the live site's
+   callout palette (site/mdx-components.tsx: border-primary/30 bg-primary/10 and
+   border-stone-500/30 bg-stone-500/10). */
+.pl-editor .ProseMirror .pl-callout[data-variant="info"] {
+  border-color: color-mix(
+    in oklch,
+    var(--color-primary) 30%,
+    var(--color-border)
+  );
+  background: color-mix(in oklch, var(--color-primary) 10%, var(--color-card));
+}
+.pl-editor .ProseMirror .pl-callout[data-variant="check"] {
+  border-color: color-mix(in oklch, #78716c 30%, var(--color-border));
+  background: color-mix(in oklch, #78716c 10%, var(--color-card));
+}
+
+/* Tables */
+.pl-editor .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.8em 0;
+  overflow: hidden;
+  border-radius: 8px;
+}
+.pl-editor .ProseMirror th,
+.pl-editor .ProseMirror td {
+  /* position:relative anchors the .selectedCell overlay and the column resize
+     handle (both are absolutely positioned inside the cell). */
+  position: relative;
+  border: 1px solid var(--color-border);
+  padding: 8px 10px;
+  text-align: start;
+  vertical-align: top;
+}
+.pl-editor .ProseMirror th {
+  background: var(--color-muted);
+  font-weight: 600;
+}
+.pl-editor .ProseMirror .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, var(--color-primary) 12%, transparent);
+  pointer-events: none;
+}
+.pl-editor .ProseMirror .tableWrapper {
+  overflow-x: auto;
+}
+/* Column resizing (prosemirror-tables): a grab line on the column edge, and a
+   col-resize cursor while hovering/dragging the boundary. */
+.pl-editor .ProseMirror .column-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: -2px;
+  right: -2px;
+  width: 4px;
+  background: var(--color-primary);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 10;
+}
+.pl-editor .ProseMirror.resize-cursor {
+  cursor: col-resize;
+}
+
+/* Images */
+.pl-editor .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  margin: 0.6em 0;
+}
+.pl-editor .ProseMirror img.ProseMirror-selectednode {
+  outline: 2px solid var(--color-primary);
+}
+
+/* Placeholder — shown on empty nodes via data-placeholder. */
+.pl-editor .ProseMirror .is-empty::before,
+.pl-editor .ProseMirror .is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: inline-start;
+  height: 0;
+  color: var(--color-muted-foreground);
+  pointer-events: none;
+}
+
+/* Gapcursor */
+.pl-editor .ProseMirror .ProseMirror-gapcursor:after {
+  border-top-color: var(--color-foreground);
+}
+
+/* ── MDX components (editor view) ─────────────────────────────────────────── */
+
+/* Unknown/custom MDX is a local atom: source is visible enough to identify the
+ * block, never contenteditable, and does not lock supported siblings. */
+.pl-editor .pl-mdx-opaque-block {
+  position: relative;
+  margin: 1rem 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px dashed
+    color-mix(
+      in oklch,
+      var(--color-amber-500, #f59e0b) 55%,
+      var(--color-border)
+    );
+  border-radius: 0.75rem;
+  background: color-mix(in oklch, #f59e0b 7%, var(--color-card));
+  padding: 2.1rem 0.9rem 0.8rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+.pl-editor .pl-mdx-opaque-block::before {
+  content: attr(data-name) " · unsupported block · source preserved";
+  position: absolute;
+  inset-inline: 0.9rem;
+  top: 0.65rem;
+  color: color-mix(in oklch, #b45309 80%, var(--color-foreground));
+  font-family: var(--font-sans, ui-sans-serif, sans-serif);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pl-editor .pl-mdx-opaque-inline {
+  display: inline-block;
+  max-width: 22rem;
+  overflow: hidden;
+  vertical-align: text-bottom;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 1px dashed color-mix(in oklch, #f59e0b 55%, var(--color-border));
+  border-radius: 0.35rem;
+  background: color-mix(in oklch, #f59e0b 8%, var(--color-card));
+  padding: 0.05rem 0.35rem;
+  color: #b45309;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8em;
+}
+.pl-editor .pl-mdx-opaque-block.ProseMirror-selectednode,
+.pl-editor .pl-mdx-opaque-inline.ProseMirror-selectednode {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Steps: a vertical guide line with auto-numbered step markers. */
+.pl-editor .pl-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin: 1.25rem 0;
+  padding-inline-start: 1.75rem;
+  border-inline-start: 1px solid var(--color-border);
+  counter-reset: pl-step;
+}
+.pl-editor .pl-step {
+  position: relative;
+  counter-increment: pl-step;
+}
+.pl-editor .pl-step::before {
+  content: counter(pl-step);
+  position: absolute;
+  inset-inline-start: -2.62rem;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 9999px;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+/* Shared: the editable title/caption input on title-bearing component blocks. */
+.pl-editor [class$="-title-input"] {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-foreground);
+  outline: none;
+}
+.pl-editor [class$="-title-input"]::placeholder {
+  color: var(--color-muted-foreground);
+  font-weight: 500;
+}
+.pl-editor [class$="-body"] > :first-child {
+  margin-top: 0;
+}
+.pl-editor [class$="-body"] > :last-child {
+  margin-bottom: 0;
+}
+.pl-editor .pl-step-body {
+  margin-top: 0.15rem;
+}
+
+/* Card group: a responsive grid of bordered cards. */
+.pl-editor .pl-cardgroup {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+.pl-editor .pl-cardgroup[data-cols="1"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pl-editor .pl-cardgroup[data-cols="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.pl-editor .pl-cardgroup[data-cols="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.pl-editor .pl-card {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-card);
+  padding: 1rem;
+}
+.pl-editor .pl-card-body {
+  margin-top: 0.25rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.9rem;
+}
+/* Card icon + href inputs (authoring linkable/icon cards in the editor). */
+.pl-editor .pl-card-meta {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.4rem;
+}
+.pl-editor .pl-card-meta-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background: var(--color-background);
+  padding: 0.15rem 0.45rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted-foreground);
+  outline: none;
+}
+.pl-editor .pl-card-meta-input:focus {
+  border-color: var(--color-ring);
+}
+
+.pl-editor .pl-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+@media (max-width: 720px) {
+  .pl-editor-document .pl-document-page {
+    padding: 1.75rem 1.25rem 6rem;
+  }
+  .pl-editor .pl-cardgroup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.pl-editor .pl-column,
+.pl-editor .pl-banner {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+.pl-editor .pl-banner {
+  background: color-mix(in oklch, var(--color-primary) 8%, var(--color-card));
+}
+.pl-editor .pl-badge {
+  border-radius: 9999px;
+  background: var(--color-muted);
+  padding: 0.12rem 0.45rem;
+  font-size: 0.78em;
+  font-weight: 600;
+}
+.pl-editor .pl-button {
+  border-radius: 0.5rem;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  padding: 0.3rem 0.65rem;
+  font-weight: 600;
+}
+
+/* Tabs: stacked panes in the editor (the live site switches between them). */
+.pl-editor .pl-tabs {
+  margin: 1.25rem 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.pl-editor .pl-tab {
+  padding: 0.75rem 1rem;
+}
+.pl-editor .pl-tab:not(:first-child) {
+  border-top: 1px solid var(--color-border);
+}
+.pl-editor .pl-tab-title-input {
+  color: var(--color-primary);
+}
+
+/* Accordions: collapsible-looking sections (always expanded while editing). */
+.pl-editor .pl-accordiongroup {
+  margin: 1.25rem 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.pl-editor .pl-accordion {
+  padding: 0.75rem 1rem;
+}
+.pl-editor .pl-accordion:not(:first-child) {
+  border-top: 1px solid var(--color-border);
+}
+
+/* Frame: a framed figure with a caption below. */
+.pl-editor .pl-frame {
+  margin: 1.25rem 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-muted) 30%, transparent);
+  padding: 0.75rem;
+}
+.pl-editor .pl-frame-body {
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.pl-editor .pl-frame-title-input {
+  margin-top: 0.5rem;
+  text-align: center;
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+}

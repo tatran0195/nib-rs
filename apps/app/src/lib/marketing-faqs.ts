@@ -1,0 +1,27 @@
+/** Marketing FAQ shared by the visible page and matching FAQPage JSON-LD. */
+export const marketingFaqs: { q: string; a: string }[] = [
+  {
+    q: 'Can I use Nibleaf Cloud now?',
+    a: 'Yes. Nibleaf Cloud is live and free while in beta — managed docs hosting, sign-in, publishing, search, and custom domains.',
+  },
+  {
+    q: 'Is Nibleaf open source?',
+    a: 'Yes. The source repository is public under AGPL-3.0, and the self-hosted release includes a pinned GHCR image and guided Docker Compose installer.',
+  },
+  {
+    q: 'What happens after the beta?',
+    a: 'Paid cloud plans will come later, announced with generous advance notice, and beta workspaces will get preferential treatment. Self-hosting remains available under AGPL-3.0.',
+  },
+  {
+    q: 'Are there limits during the beta?',
+    a: 'The beta runs on a fair-use basis rather than hard plan limits. If a workspace is unusually heavy on resources, we will reach out before anything changes.',
+  },
+  {
+    q: 'Can I use my own object storage?',
+    a: 'Absolutely. Nibleaf speaks the S3 API, so it works with any S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, or the bundled storage service).',
+  },
+  {
+    q: 'How does search work?',
+    a: 'The built-in Orama path provides full-text and fuzzy results. Source main also includes an optional tenant-filtered Qdrant hybrid path and opt-in grounded answers; operators start in shadow mode and retain the legacy path for rollback.',
+  },
+];

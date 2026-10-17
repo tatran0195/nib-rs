@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createDocIndex,
+  fuzzyToleranceForQuery,
+  normalizeArabicSearchText,
+  oramaLanguageForCode,
+  type SearchDoc,
+  searchDocs,
+  stripMarkdown,
+} from './index';
+
+describe('stripMarkdown (search snippets read as clean prose)', () => {
+  it('removes headings, emphasis, inline + fenced code, links and component tags', () => {
+    const md =
+      '# Quickstart\n\nInstall with `npm i` then run:\n\n```bash\nnpm run dev\n```\n\nSee the **bold** [docs](https://x.dev) and <Note>tips</Note>.';
+    const out = stripMarkdown(md);
+    expect(out).not.toMatch(/[#`*]|```|<Note>|\]\(/);
+    expect(out).toContain('Quickstart');
+    expect(out).toContain('docs');
+    expect(out).toContain('tips');
+    expect(out).not.toContain('npm run dev'); // fenced code dropped
+  });
+
+  it('preserves underscores in code-like identifiers', () => {
+    const out = stripMarkdown('| Variable | Purpose |\n| --- | --- |\n| `STORAGE_SECRET_ACCESS_KEY` | Object storage secret. |');
+    expect(out).toContain('STORAGE_SECRET_ACCESS_KEY');
+  });
+});
+
+describe('searchDocs snippets', () => {
+  it('produces a snippet free of raw Markdown markers', async () => {
+    const docs: SearchDoc[] = [
+      {
+        id: '1',
+        title: 'Quickstart',
+        path: 'quickstart',
+        description: '',
+        headings: '',
+        content: '# Quickstart\n\nRun `pnpm dev` to **start** the local server quickly.',
+      },
+    ];
+    const index = await createDocIndex(docs, 'english');
+    const hits = await searchDocs(index, 'server');
+    expect(hits[0]?.snippet).toBeDefined();
+    expect(hits[0]?.snippet).not.toMatch(/[#`*]/);
+    expect(hits[0]?.snippet).toContain('server');
+  });
+});
+
+const arabicDocs: SearchDoc[] = [
+  {
+    id: '1',
+    title: 'تثبيت المنصة',
+    path: 'install',
+    description: 'دليل التثبيت',
+    headings: 'المتطلبات',
+    content: 'لتثبيت المنصة تحتاج إلى اتصال بالإنترنت ومتصفح حديث.',
+  },
+  {
+    id: '2',
+    title: 'إدارة الحجوزات',
+    path: 'bookings',
+    description: 'دليل الحجوزات',
+    headings: 'الحجوزات',
+    content: 'يمكنك إدارة جميع الحجوزات من لوحة التحكم بسهولة.',
+  },
+];
+
+const englishDocs: SearchDoc[] = [
+  {
+    id: 'a',
+    title: 'Installation',
+    path: 'install',
+    description: 'Install guide',
+    headings: 'Requirements',
+    content: 'To install the platform you need internet access and a modern browser.',
+  },
+  {
+    id: 'b',
+    title: 'Managing bookings',
+    path: 'bookings',
+    description: 'Bookings guide',
+    headings: 'Bookings',
+    content: 'You can manage all your bookings from the dashboard.',
+  },
+];
+
+describe('oramaLanguageForCode', () => {
+  it('maps a primary subtag to its Orama tokenizer', () => {
+    expect(oramaLanguageForCode('ar')).toBe('arabic');
+    expect(oramaLanguageForCode('ar-SA')).toBe('arabic');
+    expect(oramaLanguageForCode('en-US')).toBe('english');
+    expect(oramaLanguageForCode('fr')).toBe('french');
+  });
+  it('defaults to English for unknown or empty codes', () => {
+    expect(oramaLanguageForCode('xx')).toBe('english');
+    expect(oramaLanguageForCode(undefined)).toBe('english');
+  });
+});
+
+describe('Arabic search (regression: language-aware tokenizer)', () => {
+  it('returns zero hits for an Arabic query under the English tokenizer', async () => {
+    const enIndex = await createDocIndex(arabicDocs, 'english');
+    const hits = await searchDocs(enIndex, 'تثبيت', { tolerance: 1 });
+    expect(hits).toHaveLength(0);
+  });
+  it('returns hits for an Arabic query under the Arabic tokenizer', async () => {
+    const arIndex = await createDocIndex(arabicDocs, 'arabic');
+    const hits = await searchDocs(arIndex, 'تثبيت', { tolerance: 1 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]?.id).toBe('1');
+  });
+
+  it('matches common alef, alef maqsura, diacritic, and tatweel variants', async () => {
+    const delayedMatch = `${'مقدمة عامة '.repeat(30)}إِعْدَادَات الحساب بالتفصيل`;
+    const docs: SearchDoc[] = [
+      {
+        id: 'settings',
+        title: 'الإعدادات الأولى',
+        path: 'settings',
+        description: '',
+        headings: '',
+        content: `اضبط الحساب من لوحة التحكــم. ${delayedMatch}`,
+      },
+    ];
+    const index = await createDocIndex(docs, 'arabic');
+
+    expect((await searchDocs(index, 'الاعدادات', { tolerance: 0 }))[0]?.id).toBe('settings');
+    expect((await searchDocs(index, 'التحكم', { tolerance: 0 }))[0]?.id).toBe('settings');
+    expect((await searchDocs(index, 'اعدادات', { tolerance: 0 }))[0]?.snippet).toContain('إِعْدَادَات الحساب');
+    expect(normalizeArabicSearchText('إِلَى')).toBe('الي');
+    expect(normalizeArabicSearchText('إدارة')).toBe('ادارة');
+    expect(normalizeArabicSearchText('إدارة')).not.toBe('اداره');
+  });
+});
+
+describe('English search', () => {
+  it('finds the relevant doc', async () => {
+    const index = await createDocIndex(englishDocs, 'english');
+    const hits = await searchDocs(index, 'install', { tolerance: 1 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]?.id).toBe('a');
+  });
+  it('returns nothing for an empty query', async () => {
+    const index = await createDocIndex(englishDocs, 'english');
+    expect(await searchDocs(index, '   ')).toHaveLength(0);
+  });
+
+  it('finds a long documentation term with two typing mistakes', async () => {
+    const index = await createDocIndex(englishDocs, 'english');
+    const hits = await searchDocs(index, 'instlltion');
+    expect(hits[0]?.id).toBe('a');
+  });
+});
+
+describe('adaptive fuzzy tolerance', () => {
+  it('keeps short technical terms exact and expands safely for longer words', () => {
+    expect(fuzzyToleranceForQuery('api', 2)).toBe(0);
+    expect(fuzzyToleranceForQuery('search', 2)).toBe(1);
+    expect(fuzzyToleranceForQuery('installation', 2)).toBe(2);
+    expect(fuzzyToleranceForQuery('installation', 1)).toBe(1);
+  });
+});

@@ -1,0 +1,169 @@
+import { mergeAttributes, Node } from '@tiptap/core';
+import type { MarkdownNodeSpec } from 'tiptap-markdown';
+import { preservedClosingTag, sourceMetadataAttributes } from './mdx-roundtrip';
+
+/** Callout variants → emoji + the GitHub admonition keyword used for markdown round-trip. */
+const CALLOUT_VARIANTS = {
+  note: { icon: '💡', keyword: 'NOTE', label: 'Note' },
+  tip: { icon: '💡', keyword: 'TIP', label: 'Tip' },
+  check: { icon: '✅', keyword: 'CHECK', label: 'Check' },
+  warning: { icon: '⚠️', keyword: 'WARNING', label: 'Warning' },
+  danger: { icon: '🚫', keyword: 'CAUTION', label: 'Caution' },
+  info: { icon: 'ℹ️', keyword: 'IMPORTANT', label: 'Info' },
+} as const;
+
+type CalloutVariant = keyof typeof CALLOUT_VARIANTS;
+
+const KEYWORD_TO_VARIANT: Record<string, CalloutVariant> = Object.fromEntries(
+  Object.entries(CALLOUT_VARIANTS).map(([variant, def]) => [def.keyword, variant as CalloutVariant]),
+);
+
+/** Resolve one of Nibleaf's canonical callout types/tag names to a variant. */
+const normalizeVariant = (raw?: string | null): CalloutVariant => {
+  const t = (raw ?? 'note').toLowerCase();
+  if (t in CALLOUT_VARIANTS) {
+    return t as CalloutVariant;
+  }
+  return 'note';
+};
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    callout: {
+      /** Wrap the selection (or insert) a callout block. */
+      setCallout: (attributes?: { variant?: CalloutVariant }) => ReturnType;
+      toggleCallout: (attributes?: { variant?: CalloutVariant }) => ReturnType;
+    };
+  }
+}
+
+/**
+ * A colored callout/admonition block. Holds block content (usually a paragraph).
+ *
+ * Markdown round-trip: serialized as a GitHub-style blockquote admonition —
+ * `> [!NOTE]\n> body` — which degrades to a plain blockquote anywhere that does
+ * not understand the `[!NOTE]` marker, so nothing downstream breaks.
+ */
+export const Callout = Node.create({
+  name: 'callout',
+  group: 'block',
+  content: 'block+',
+  defining: true,
+
+  addOptions() {
+    return {
+      HTMLAttributes: {},
+    };
+  },
+
+  addAttributes() {
+    return {
+      ...sourceMetadataAttributes(),
+      variant: {
+        default: 'note' as CalloutVariant,
+        // Derive the variant from data-variant, or from a Mintlify-style tag
+        // (<Note>/<Tip>/…) name, or from <Callout type="…">.
+        parseHTML: (element) => {
+          const explicit = element.getAttribute('data-variant');
+          if (explicit) {
+            return normalizeVariant(explicit);
+          }
+          const tag = element.tagName.toLowerCase();
+          return tag === 'callout' ? normalizeVariant(element.getAttribute('type')) : normalizeVariant(tag);
+        },
+        renderHTML: (attributes) => ({ 'data-variant': attributes.variant }),
+      },
+    };
+  },
+
+  // Parse our own div, the generic <Callout type="…">, and each Mintlify-style
+  // callout tag (<Note>/<Tip>/<Info>/<Check>/<Warning>/<Danger>) so MDX-tag
+  // callouts round-trip into editor blocks instead of being dropped on save.
+  parseHTML() {
+    return [{ tag: 'div[data-callout]' }, { tag: 'callout' }, ...Object.keys(CALLOUT_VARIANTS).map((variant) => ({ tag: variant }))];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    const variant = (HTMLAttributes['data-variant'] as CalloutVariant) ?? 'note';
+    const def = CALLOUT_VARIANTS[variant] ?? CALLOUT_VARIANTS.note;
+    return [
+      'div',
+      mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, { 'data-callout': '', class: 'pl-callout' }),
+      ['span', { class: 'pl-callout-icon', contenteditable: 'false' }, def.icon],
+      ['div', { class: 'pl-callout-body' }, 0],
+    ];
+  },
+
+  addCommands() {
+    return {
+      setCallout:
+        (attributes) =>
+        ({ commands }) =>
+          commands.wrapIn(this.name, attributes),
+      toggleCallout:
+        (attributes) =>
+        ({ commands }) =>
+          commands.toggleWrap(this.name, attributes),
+    };
+  },
+
+  /**
+   * tiptap-markdown integration. `serialize` emits a GitHub admonition blockquote;
+   * `parse.setup` teaches markdown-it to recognise the `[!NOTE]` marker at the top
+   * of a blockquote and rewrite it into our `data-callout` div before tiptap parses
+   * the HTML.
+   */
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          const sourceOpen = String(node.attrs.sourceOpen ?? '');
+          if (sourceOpen) {
+            state.write(sourceOpen);
+            state.closeBlock(node);
+            state.renderContent(node);
+            state.write(preservedClosingTag(node, 'Callout'));
+            state.closeBlock(node);
+            return;
+          }
+          const variant = (node.attrs.variant as CalloutVariant) ?? 'note';
+          const def = CALLOUT_VARIANTS[variant] ?? CALLOUT_VARIANTS.note;
+          state.write(`> [!${def.keyword}]\n`);
+          state.wrapBlock('> ', null, node, () => state.renderContent(node));
+        },
+        parse: {
+          updateDOM(element: HTMLElement) {
+            // Rewrite `<blockquote><p>[!NOTE] ...</p>…</blockquote>` into a callout div.
+            for (const quote of Array.from(element.querySelectorAll('blockquote'))) {
+              const firstParagraph = quote.querySelector('p');
+              const text = firstParagraph?.textContent ?? '';
+              const match = text.match(/^\s*\[!(\w+)\]\s*/);
+              if (!match) {
+                continue;
+              }
+              const keyword = (match[1] ?? '').toUpperCase();
+              const variant = KEYWORD_TO_VARIANT[keyword];
+              if (!variant) {
+                continue;
+              }
+              // Strip the `[!NOTE]` marker from the leading paragraph.
+              if (firstParagraph) {
+                firstParagraph.textContent = text.replace(/^\s*\[!\w+\]\s*\n?/, '');
+                if (!firstParagraph.textContent.trim()) {
+                  firstParagraph.remove();
+                }
+              }
+              const div = element.ownerDocument.createElement('div');
+              div.setAttribute('data-callout', '');
+              div.setAttribute('data-variant', variant);
+              while (quote.firstChild) {
+                div.appendChild(quote.firstChild);
+              }
+              quote.replaceWith(div);
+            }
+          },
+        },
+      } satisfies MarkdownNodeSpec,
+    };
+  },
+});

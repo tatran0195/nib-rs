@@ -1,0 +1,27 @@
+import { MemberRole } from '@nibleaf/shared/constants';
+import { errorResponses } from '@/errors/utils';
+import { createRouteConfig } from '@/lib/hono/route-config';
+import { isAuthenticated, requireProjectMember, requireProjectRole } from '@/middlewares/guard';
+
+const ok = { 200: { description: 'ok' }, ...errorResponses };
+const admin = [isAuthenticated, requireProjectRole(MemberRole.ADMIN)] as const;
+
+const domainsRoutes = {
+  list: createRouteConfig({
+    guard: [isAuthenticated, requireProjectMember()],
+    tags: ['domains'],
+    description: 'List custom domains.',
+    responses: ok,
+  }),
+  add: createRouteConfig({
+    guard: [...admin],
+    tags: ['domains'],
+    description: 'Connect a custom domain.',
+    responses: { 201: { description: 'created' }, ...errorResponses },
+  }),
+  verify: createRouteConfig({ guard: [...admin], tags: ['domains'], description: 'Verify a custom domain.', responses: ok }),
+  primary: createRouteConfig({ guard: [...admin], tags: ['domains'], description: 'Set the primary domain.', responses: ok }),
+  remove: createRouteConfig({ guard: [...admin], tags: ['domains'], description: 'Disconnect a domain.', responses: ok }),
+};
+
+export default domainsRoutes;

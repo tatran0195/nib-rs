@@ -1,0 +1,27 @@
+{
+  "name": "@nibleaf/validators",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./addons": "./src/addons.ts",
+    "./schema": "./src/index.ts",
+    "./redirects": "./src/redirects.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nibleaf/shared": "workspace:*",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@nibleaf/tsconfig": "workspace:*",
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,63 @@
+# dependencies
+node_modules
+.bundle-analysis
+.pnpm-store
+
+# build output
+dist
+.output
+.nitro
+.turbo
+.cache
+.cloudflare
+.tanstack
+**/src/generated
+**/src/paraglide
+
+# env
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# logs
+*.log
+logs
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# docker volumes
+.docker-data
+
+# test artifacts
+coverage
+.playwright/
+.playwright-cli/
+.playwright-mcp/
+**/playwright/.auth/
+**/playwright/.cache/
+playwright-report/
+blob-report/
+test-results/
+*.tgz
+
+# dogfood / QA artifacts (screenshots, videos, saved auth state — never publish)
+/dogfood-output/
+/output/
+
+# local SEO working files and evidence are never shipped
+.seo-cache/
+seo-audit/
+
+# local temporary files and directories
+*.tmp
+*.temp
+.tmp/
+.temp/
+tmp/
+temp/

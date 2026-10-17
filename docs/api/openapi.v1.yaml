@@ -1,0 +1,757 @@
+openapi: 3.1.1
+info:
+  title: Nibleaf Rust API
+  version: 0.1.0
+  description: |
+    Incremental Rust/Axum API. Only documented operations are implemented.
+    Most operations bridge an existing opaque Nibleaf session during migration.
+    Native identity administration paths explicitly require the gated native cookie plus browser-origin/CSRF admission.
+    Implemented JSON and framework-level failures use RFC 9457 Problem Details;
+    request bodies are capped at 2 MiB.
+servers:
+  - url: https://api.example.invalid/v1
+security:
+  - LegacySession: []
+paths:
+  /projects:
+    get:
+      summary: List projects visible to the authenticated member
+      responses:
+        '200': { $ref: '#/components/responses/ProjectList' }
+        '401': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Create one project-owned tenant and recoverable onboarding run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProject' }
+      responses:
+        '201': { $ref: '#/components/responses/Project' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/onboarding:
+    get:
+      summary: Read onboarding state for a project member
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { $ref: '#/components/responses/Onboarding' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/pages:
+    get:
+      summary: List default-branch pages with keyset cursor pagination
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/PageList' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Create a draft page in the default branch
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePage' }
+      responses:
+        '201': { $ref: '#/components/responses/Page' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/pages/{page_id}:
+    get:
+      summary: Get a draft page
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/PageId' } ]
+      responses:
+        '200': { $ref: '#/components/responses/Page' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+    patch:
+      summary: Update page body/title with optimistic concurrency control
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/PageId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePage' }
+      responses:
+        '200': { $ref: '#/components/responses/Page' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/members:
+    get:
+      summary: List members in the project's own tenant organization
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { $ref: '#/components/responses/MemberList' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/members/{member_id}:
+    patch:
+      summary: Change an admin or member role; owner is never directly assignable
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/MemberId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMemberRole' }
+      responses:
+        '200': { $ref: '#/components/responses/Member' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+    delete:
+      summary: Remove a member other than the last owner
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/MemberId' } ]
+      responses:
+        '204': { description: Member removed }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/members/transfer-ownership:
+    post:
+      summary: Atomically transfer the sole owner role to an existing admin
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferOwnership' }
+      responses:
+        '200': { $ref: '#/components/responses/Member' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /public/sites/{project_id}/search:
+    get:
+      summary: Opt-in staged published lexical search; disabled by default
+      description: ADR-0017 candidate, present only with NIBLEAF_PUBLIC_SEARCH_ENABLED=true, not production cutover. Optional native/explicit transition identity and reader admission run inside the leased read-only snapshot. Highest READY plus published ceilings/live restrictions; literal lexical text with authorization-scoped BM25 and stable pre-limit ties. All success/error responses private no-store and Vary Cookie Authorization; no partial/older/legacy fallback. Selected 200 UTF-16 units is explicit and stricter for supplementary characters than installed legacy Zod scalar counting. No raw-term analytics; native capabilities.answer is false. No hard CPU/IO/RSS/drain guarantee.
+      security: [ {} ]
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: q
+          in: query
+          description: Literal lexical query, defaults blank and yields no hits. Explicitly at most 200 UTF-16 code units; not Unicode scalar maxLength. Up to 600 UTF-8 bytes; strict duplicate/unknown input refusal.
+          x-max-utf16-code-units: 200
+          schema: { type: string, default: '' }
+        - { name: lang, in: query, description: Captured language/default fallback narrowed by live restrictions; 191 UTF-8 bytes., schema: { type: string } }
+        - { name: version, in: query, description: Captured version/default fallback; 191 UTF-8 bytes., schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50 } }
+      responses:
+        '200':
+          description: Legacy-shaped lexical envelope; actual serialized body at most 1 MiB. Scores use only the authorized corpus; values are not Orama/semantic score parity.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [hits, runtime, capabilities]
+                    properties:
+                      hits:
+                        type: array
+                        maxItems: 50
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required: [id, title, path, description, snippet, score, language]
+                          properties:
+                            id: { type: string }
+                            title: { type: string }
+                            path: { type: string }
+                            description: { type: string }
+                            icon: { type: string }
+                            snippet: { type: string }
+                            score: { type: number }
+                            language: { type: string }
+                      runtime: { type: string, const: tantivy }
+                      capabilities:
+                        type: object
+                        additionalProperties: false
+                        required: [answer]
+                        properties:
+                          answer: { type: boolean, const: false }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '405': { $ref: '#/components/responses/Problem' }
+        '408': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/search:
+    get:
+      summary: Search the registry-selected native lexical generation as a project member
+      description: This authenticated no-store management route is not the public-site reader route. It opens only the ready project generation with source format 2 and current runtime-bound manifest 3, returning 503 when no compatible validated generation is available. The corpus excludes groups, hidden/noindex pages, and disabled languages. Omitted version/language searches all eligible versions/locales; supplied values are exact, with unknown values returning no hits (no public fallback resolution). The separate non-HTTP published-search preparation/consuming execution uses highest-READY selection and published ceilings plus live restrictions under ADR-0015; it is not exposed by this management route or any public route. ADR-0016 supervises both member HTTP and a non-HTTP published facade with immediate capacity admission, bounded feature preparation/validation, tracked SQL and joined blocking drain. Capacity, elapsed budget and operational-size failures use existing 503 dependency-unavailable Problem Details, with no partial results or fallback. Global authentication/extraction precedes this feature budget; it is not a hard CPU/I/O/RSS/shutdown guarantee.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: q
+          in: query
+          required: true
+          description: Nonblank management query. The server trims then bounds to 512 UTF-8 bytes; maxLength is a conservative client character bound, not an expression of the server byte/trim validation or the undecided public legacy Unicode contract.
+          x-max-utf8-bytes: 512
+          schema: { type: string, minLength: 1, maxLength: 512 }
+        - name: language
+          in: query
+          description: Exact immutable language code, not a tokenizer family.
+          schema: { type: string, minLength: 1, maxLength: 191 }
+        - name: version
+          in: query
+          description: Exact immutable version slug. This management filter does not resolve public-site defaults.
+          schema: { type: string, minLength: 1, maxLength: 191 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        '200': { $ref: '#/components/responses/ProjectSearch' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/publications:
+    get:
+      summary: List up to 100 publication attempts
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { $ref: '#/components/responses/PublicationList' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Capture immutable draft snapshot and durably request publication
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Publish' }
+      responses:
+        '202': { $ref: '#/components/responses/Publication' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/member-invitations:
+    post:
+      summary: Create an idempotent project member invitation
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMemberInvitation' }
+      responses:
+        '201': { $ref: '#/components/responses/MemberInvitation' }
+        '200': { $ref: '#/components/responses/MemberInvitation' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /projects/{project_id}/member-invitations/{invitation_id}/cancel:
+    post:
+      summary: Cancel one pending project member invitation
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: invitation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Invitation cancelled }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /member-invitations/{token}/accept:
+    post:
+      summary: Accept a signed invitation as its authenticated recipient
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200': { $ref: '#/components/responses/MemberInvitation' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /identity/otp/request:
+    post:
+      summary: Request an opaque native sign-in OTP continuation
+      description: Requires an exact configured Origin. A configured provider is required. Accepted, malformed, and rate-limited input all return the same 202 UUID-shaped non-secret challenge handle with Cache-Control no-store; only a stored challenge plus a correct OTP can authenticate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OtpRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/OtpChallenge' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/otp/verify:
+    post:
+      summary: Verify a native sign-in OTP and issue a native session
+      description: Requires an exact configured Origin. The opaque handle from the request route is bound to a stored one-time sign-in challenge; invalid, fake, expired, consumed, locked, or wrong-purpose inputs are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OtpVerifyRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OtpSessionIssued' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/email-change/request:
+    post:
+      summary: Start an opaque two-stage native email-change continuation
+      description: Requires the gated native identity cookie, exact configured Origin, and X-CSRF-Token. It returns a UUID-shaped current-mailbox continuation handle for every ordinary accepted, malformed, unchanged, taken, or rate-limited target outcome. A non-rate-limited request deliberately issues the current-mailbox OTP even for malformed, unchanged, or taken targets, preventing delivery arrival from becoming an ownership oracle. Only an eligible real flow can later cause an OTP to be sent to the new mailbox.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailChangeRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/EmailChangeContinuation' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/email-change/verify-current:
+    post:
+      summary: Prove the current mailbox and receive the opaque new-mailbox continuation
+      description: Requires the same native browser admission. An invalid, stale, fake, foreign, rate-limited, or wrong-code continuation still receives a fresh UUID-shaped 202 response; only a real proof creates and sends the new-mailbox OTP.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailChangeVerification' }
+      responses:
+        '202': { $ref: '#/components/responses/EmailChangeContinuation' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/email-change/confirm:
+    post:
+      summary: Consume a proven new-mailbox code and change the native identity email
+      description: Requires the same native browser admission. Unlike the prior anti-enumeration stages, a stale or invalid final proof is rejected.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailChangeVerification' }
+      responses:
+        '200': { $ref: '#/components/responses/EmptyAcknowledgement' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/session:
+    get:
+      summary: Read the current native identity session and self-service profile
+      description: Requires only the gated native identity cookie. `active_organization_id` is presentation context, resolved to the stored live membership or deterministically to the first current membership; it is never an authorization grant.
+      security: [ { NativeIdentity: [] } ]
+      responses:
+        '200': { $ref: '#/components/responses/NativeIdentitySession' }
+        '401': { $ref: '#/components/responses/Problem' }
+  /identity/csrf:
+    post:
+      summary: Recover and rotate the current native session's CSRF secret
+      description: Requires the gated native identity cookie and an explicit exact configured Origin, but deliberately does not require X-CSRF-Token because it is the narrowly scoped browser recovery operation for a lost client-side token. It rotates the server-side secret, invalidating the prior token for this session, and returns the new token once with Cache-Control no-store.
+      security: [ { NativeIdentity: [] } ]
+      responses:
+        '200': { $ref: '#/components/responses/CsrfRecovery' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /identity/account-deletion:
+    post:
+      summary: Permanently delete the current native account while preserving shared workspaces
+      description: >-
+        Requires a direct live native identity cookie, exact configured Origin, and X-CSRF-Token. The route atomically cancels a pending native provisioning intent, records immutable opaque deletion evidence, deletes the user and cascading sessions, clears the native cookie only after commit, and returns Cache-Control no-store. A workspace with another member is retained: when the departing account is its only owner, the oldest other member is promoted atomically before the departing membership is removed. A sole-member workspace or worker-owned provisioning lease returns 409; it is not partially deleted because retained-store tenant erasure (usage/analytics, search, storage, exports, Git-related data, and external provider retention) is not yet implemented here.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      responses:
+        '204': { description: Account permanently deleted and native identity cookie cleared. }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /identity/profile:
+    patch:
+      summary: Update the current native identity user's display name
+      description: Requires the gated native identity cookie, exact configured Origin, and X-CSRF-Token. This only changes the current session user's name; it does not change email or authorization state.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateIdentityProfile' }
+      responses:
+        '200': { $ref: '#/components/responses/IdentityProfile' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /identity/session/active-organization:
+    put:
+      summary: Select an active native workspace context from the user's live memberships
+      description: Requires the gated native identity cookie, exact configured Origin, and X-CSRF-Token. The preference is validated against a live membership but never confers feature authorization.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SelectActiveOrganization' }
+      responses:
+        '200': { $ref: '#/components/responses/IdentityProfile' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /identity/admin/users/{user_id}/suspend:
+    post:
+      summary: Suspend a regular account and revoke native and bridge sessions
+      description: Requires a live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token. Platform administrators cannot be suspended.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/UserId' }, { $ref: '#/components/parameters/CsrfToken' } ]
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /identity/admin/users/{user_id}/unsuspend:
+    post:
+      summary: Lift an account suspension without restoring a prior session
+      description: Requires a live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/UserId' }, { $ref: '#/components/parameters/CsrfToken' } ]
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /identity/admin/projects/{project_id}/takedown:
+    post:
+      summary: Take a project down and fence new publications
+      description: Requires a live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token. The optional reason excludes controls and is bounded to 500 Unicode scalar values.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TakedownProject' }
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /identity/admin/projects/{project_id}/restore:
+    post:
+      summary: Restore a project taken down by an operator
+      description: Requires a live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/ProjectId' }, { $ref: '#/components/parameters/CsrfToken' } ]
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /identity/admin/impersonations:
+    post:
+      summary: Start a one-hour auditable native support session for a customer
+      description: Requires a direct live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token. Replaces the active identity cookie with the target session and writes a path-scoped operator-resume cookie; raw tokens are never returned in JSON.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/CsrfToken' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartImpersonation' }
+      responses:
+        '200': { $ref: '#/components/responses/StartImpersonation' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /identity/admin/impersonations/stop:
+    post:
+      summary: End support access or recover the operator after an emergency revocation
+      description: Requires an explicit exact trusted Origin and the path-scoped native operator-resume cookie. It intentionally does not require the target support cookie to remain valid, so revocation/expiry cannot strand the operator. It clears the resume cookie and restores the operator identity cookie.
+      security: [ { NativeIdentityResume: [] } ]
+      responses:
+        '200': { $ref: '#/components/responses/ImpersonationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /identity/admin/impersonations/{impersonation_id}/revoke:
+    post:
+      summary: Emergency-revoke an active support context
+      description: Requires a direct live native platform-administrator cookie, exact trusted Origin, and X-CSRF-Token. An already terminal context returns changed false without rewriting audit evidence.
+      security: [ { NativeIdentity: [] } ]
+      parameters: [ { $ref: '#/components/parameters/ImpersonationId' }, { $ref: '#/components/parameters/CsrfToken' } ]
+      responses:
+        '200': { $ref: '#/components/responses/ImpersonationOutcome' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    LegacySession:
+      type: http
+      scheme: bearer
+      description: Existing opaque Nibleaf session token. A migration cookie is also supported by runtime but is not browser API documentation.
+    NativeIdentity:
+      type: apiKey
+      in: cookie
+      name: nibleaf_identity
+      description: Native opaque identity session. Unsafe operations additionally require an exact configured Origin and X-CSRF-Token; Better Auth bridge credentials are rejected on native administration routes.
+    NativeIdentityResume:
+      type: apiKey
+      in: cookie
+      name: nibleaf_identity_resume
+      description: Path-scoped HttpOnly operator-resume cookie used only for the native support stop/recovery route. The route requires an explicit exact trusted Origin and intentionally accepts recovery after the target session was revoked.
+  parameters:
+    ProjectId: { name: project_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 191 } }
+    UserId: { name: user_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 191 } }
+    ImpersonationId: { name: impersonation_id, in: path, required: true, schema: { type: string, format: uuid } }
+    CsrfToken: { name: X-CSRF-Token, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 191 } }
+    PageId: { name: page_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 191 } }
+    MemberId: { name: member_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 191 } }
+  responses:
+    Problem:
+      description: RFC 9457 Problem Details
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Project: { description: Project created, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectEnvelope' } } } }
+    ProjectList: { description: Project list, content: { application/json: { schema: { type: object, required: [data], properties: { data: { type: array, items: { $ref: '#/components/schemas/Project' } } } } } } }
+    Onboarding: { description: Onboarding state, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Onboarding' } } } } } }
+    Page: { description: Draft page, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Page' } } } } } }
+    PageList: { description: Paginated draft pages, content: { application/json: { schema: { type: object, properties: { data: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Page' } }, next_cursor: { type: [string, 'null'] } } } } } } } }
+    Publication: { description: Publication accepted, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Publication' } } } } } }
+    ProjectSearch: { description: Project-member native lexical search results, headers: { Cache-Control: { schema: { type: string, example: "private, no-store" } } }, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ProjectSearch' } } } } } }
+    Member: { description: Project member, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Member' } } } } } }
+    MemberList: { description: Project members, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Member' } } } } } } }
+    MemberInvitation: { description: Member invitation, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/MemberInvitation' } } } } } }
+    OtpChallenge: { description: Opaque native sign-in OTP handle, returned with Cache-Control no-store for real and fake request outcomes., content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/OtpChallenge' } } } } } }
+    OtpSessionIssued: { description: Newly issued native session CSRF secret and expiry, returned once with Cache-Control no-store and the HttpOnly identity cookie., content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/OtpSessionIssued' } } } } } }
+    EmailChangeContinuation: { description: Opaque native email-change continuation, returned with Cache-Control no-store even for ordinary rejected request/proof paths., content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/EmailChangeContinuation' } } } } } }
+    EmptyAcknowledgement: { description: Empty successful acknowledgement, content: { application/json: { schema: { type: object, required: [data], properties: { data: { type: object, maxProperties: 0 } } } } } }
+    CsrfRecovery: { description: Fresh rotated native session CSRF secret, returned once with Cache-Control no-store., content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/CsrfRecovery' } } } } } }
+    NativeIdentitySession: { description: Native session and the current self-service identity context, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/NativeIdentitySession' } } } } } }
+    IdentityProfile: { description: Updated native self-service profile and active workspace context, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/IdentityProfile' } } } } } }
+    ModerationOutcome: { description: Moderation command result, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ModerationOutcome' } } } } } }
+    StartImpersonation: { description: Native support session started, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/StartedImpersonation' } } } } } }
+    ImpersonationOutcome: { description: Native support end or emergency revocation result, content: { application/json: { schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ImpersonationOutcome' } } } } } }
+    PublicationList: { description: Publication list, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Publication' } } } } } } }
+  schemas:
+    CreateProject:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties: { name: { type: string, minLength: 1, maxLength: 120 }, description: { type: [string, 'null'], maxLength: 1000 } }
+    Project:
+      type: object
+      required: [id, organization_id, name, slug]
+      properties: { id: { type: string }, organization_id: { type: string }, name: { type: string }, slug: { type: string }, description: { type: [string, 'null'] } }
+    ProjectEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/Project' } } }
+    Onboarding: { type: object, properties: { id: { type: string, format: uuid }, project_id: { type: string }, state: { type: string }, last_error: { type: [string, 'null'] } } }
+    CreatePage:
+      type: object
+      additionalProperties: false
+      required: [language_id, title, slug]
+      properties: { language_id: { type: string }, title: { type: string, minLength: 1, maxLength: 200 }, slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }, content: { type: string, maxLength: 1000000 }, parent_id: { type: [string, 'null'] }, kind: { type: string, enum: [PAGE, GROUP] } }
+    UpdatePage:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties: { expected_revision: { type: integer, minimum: 0 }, title: { type: string, minLength: 1, maxLength: 200 }, content: { type: string, maxLength: 1000000 } }
+    Page: { type: object, properties: { id: { type: string }, language_id: { type: string }, branch_id: { type: string }, parent_id: { type: [string, 'null'] }, kind: { type: string }, title: { type: string }, slug: { type: string }, path: { type: string }, content: { type: string }, position: { type: integer }, revision: { type: integer, minimum: 0 } } }
+    Member:
+      type: object
+      required: [id, user_id, name, email, role, created_at]
+      properties:
+        id: { type: string }
+        user_id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [owner, admin, member] }
+        created_at: { type: string, format: date-time }
+    CreateMemberInvitation:
+      type: object
+      additionalProperties: false
+      required: [recipient_email, role, delivery_mode]
+      properties:
+        recipient_email: { type: string, format: email, maxLength: 320 }
+        role: { type: string, enum: [admin, member] }
+        delivery_mode: { type: string, enum: [email, manual] }
+    MemberInvitation:
+      type: object
+      required: [id, recipient_email, requested_role, delivery_mode, status, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        recipient_email: { type: string, format: email }
+        requested_role: { type: string, enum: [admin, member] }
+        delivery_mode: { type: string, enum: [email, manual] }
+        status: { type: string, enum: [pending, accepted, cancelled, expired] }
+        expires_at: { type: string, format: date-time }
+        acceptance_url: { type: [string, 'null'], format: uri, description: Present only for pending manual invitations. }
+    UpdateMemberRole:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties: { role: { type: string, enum: [admin, member] } }
+    TransferOwnership:
+      type: object
+      additionalProperties: false
+      required: [member_id]
+      properties: { member_id: { type: string, minLength: 1, maxLength: 191 } }
+    Publish:
+      type: object
+      additionalProperties: false
+      properties: { commit_message: { type: [string, 'null'], maxLength: 500 } }
+    TakedownProject:
+      type: object
+      additionalProperties: false
+      properties: { reason: { type: [string, 'null'], maxLength: 500 } }
+    OtpRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties: { email: { type: string, maxLength: 320 } }
+    OtpVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, code]
+      properties:
+        challenge_id: { type: string, format: uuid, description: Opaque non-secret handle returned by the OTP request stage. }
+        code: { type: string, minLength: 1 }
+        name: { type: [string, 'null'], maxLength: 120, description: Used only when verification creates a new account. }
+    OtpChallenge:
+      type: object
+      required: [challenge_id]
+      properties: { challenge_id: { type: string, format: uuid, description: Opaque non-secret handle; malformed or rate-limited requests receive an indistinguishable random UUID. } }
+    OtpSessionIssued:
+      type: object
+      required: [csrf_token, expires_at]
+      properties:
+        csrf_token: { type: string, description: Returned exactly once; retain only in the authenticated client context for unsafe native calls. }
+        expires_at: { type: string, format: date-time }
+    CsrfRecovery:
+      type: object
+      required: [csrf_token]
+      properties: { csrf_token: { type: string, description: Fresh opaque CSRF secret; retain only in an authenticated client context and replace any prior value. } }
+    EmailChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [new_email]
+      properties: { new_email: { type: string, maxLength: 320 } }
+    EmailChangeVerification:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, code]
+      properties:
+        challenge_id: { type: string, format: uuid, description: Opaque continuation handle returned by the immediately preceding native email-change stage. }
+        code: { type: string, minLength: 1 }
+    EmailChangeContinuation:
+      type: object
+      required: [challenge_id]
+      properties: { challenge_id: { type: string, format: uuid, description: Opaque non-secret handle. Ordinary request/proof outcomes return an indistinguishable handle; a request may be a decoy current-mailbox proof and a rejected current-proof stage returns a random next-stage handle. } }
+    UpdateIdentityProfile:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties: { name: { type: string, minLength: 1, maxLength: 120, description: Trimmed server-side; control characters are rejected. } }
+    SelectActiveOrganization:
+      type: object
+      additionalProperties: false
+      required: [organization_id]
+      properties: { organization_id: { type: string, minLength: 1, maxLength: 191 } }
+    NativeIdentityUser:
+      type: object
+      required: [id, name, email, email_verified]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        email_verified: { type: boolean }
+    IdentityProfile:
+      type: object
+      required: [user, active_organization_id]
+      properties:
+        user: { $ref: '#/components/schemas/NativeIdentityUser' }
+        active_organization_id: { type: [string, 'null'], description: Current stored live membership or deterministic first live-membership fallback; never an authorization grant. }
+    NativeIdentitySession:
+      type: object
+      required: [user_id, user, active_organization_id, impersonated_by, expires_at]
+      properties:
+        user_id: { type: string, description: Preserved top-level identity identifier for additive-client compatibility. }
+        user: { $ref: '#/components/schemas/NativeIdentityUser' }
+        active_organization_id: { type: [string, 'null'], description: Current stored live membership or deterministic first live-membership fallback; never an authorization grant. }
+        impersonated_by: { type: [string, 'null'], description: Platform administrator ID when this is an auditable support session. }
+        expires_at: { type: string, format: date-time }
+    ModerationOutcome:
+      type: object
+      required: [changed]
+      properties: { changed: { type: boolean, description: False when the requested state already existed; the request is still audited. } }
+    StartImpersonation:
+      type: object
+      additionalProperties: false
+      required: [target_user_id]
+      properties:
+        target_user_id: { type: string, minLength: 1, maxLength: 191 }
+        active_organization_id: { type: [string, 'null'], minLength: 1, maxLength: 191, description: Optional organization that must be a membership of the target user. }
+    StartedImpersonation:
+      type: object
+      required: [impersonation_id, user_id, csrf_token, expires_at]
+      properties:
+        impersonation_id: { type: string, format: uuid }
+        user_id: { type: string }
+        csrf_token: { type: string, description: Target support-session CSRF secret; returned exactly once and never persisted in a readable cookie. }
+        expires_at: { type: string, format: date-time }
+    ImpersonationOutcome:
+      type: object
+      required: [changed]
+      properties: { changed: { type: boolean, description: False when an emergency revoke/stop found no active context; no history is rewritten. } }
+    Publication: { type: object, properties: { id: { type: string }, project_id: { type: string }, version: { type: integer }, status: { type: string, enum: [PENDING, BUILDING, READY, FAILED] }, pages_count: { type: integer }, commit_message: { type: [string, 'null'] } } }
+    ProjectSearch:
+      type: object
+      required: [deployment_id, generation_id, hits]
+      properties:
+        deployment_id: { type: string }
+        generation_id: { type: string, format: uuid }
+        hits: { type: array, items: { $ref: '#/components/schemas/ProjectSearchHit' } }
+    ProjectSearchHit:
+      type: object
+      required: [version_id, version_slug, language, page_id, path, score, title, description, snippet]
+      properties:
+        version_id: { type: string }
+        version_slug: { type: string }
+        language: { type: string }
+        page_id: { type: string }
+        path: { type: string }
+        score: { type: number, format: float }
+        title: { type: string }
+        description: { type: string }
+        icon: { type: string }
+        snippet: { type: string, maxLength: 242, description: Bounded plain-text CommonMark projection, not trusted HTML or an MDX renderer. Clients must escape it. }
+    Problem: { type: object, required: [type, title, status, detail], properties: { type: { type: string, format: uri }, title: { type: string }, status: { type: integer }, detail: { type: string }, instance: { type: string } } }

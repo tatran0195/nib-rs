@@ -1,0 +1,295 @@
+import type { LookupFunction } from 'node:net';
+import { PassThrough } from 'node:stream';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const network = vi.hoisted(() => ({
+  lookup: vi.fn(),
+  fetch: vi.fn(),
+  stream: vi.fn(),
+  gotOptions: [] as Array<{ dnsLookup?: LookupFunction; followRedirect?: boolean; retry?: { limit?: number }; timeout?: { request?: number } }>,
+}));
+
+vi.mock('@nibleaf/database', () => ({ prisma: {} }));
+vi.mock('node:dns/promises', () => ({ lookup: network.lookup }));
+vi.mock('got', () => ({ default: { stream: network.stream } }));
+vi.mock('./projects', () => ({ assertProjectInOrg: vi.fn() }));
+
+import { AppError } from '@/errors';
+import { fetchPublicOpenApi, MAX_OPENAPI_BYTES, parseAndValidateOpenApi, publicOpenApiMetadata, readBoundedOpenApiResponse } from './openapi';
+
+const valid = `
+openapi: 3.1.0
+info:
+  title: Pets
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        name: { type: string }
+`;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  network.gotOptions.length = 0;
+  network.lookup.mockImplementation(async (hostname: string) => [{ address: hostname === '127.0.0.1' ? '127.0.0.1' : '203.0.113.10', family: 4 }]);
+  network.fetch.mockResolvedValue(new Response(valid));
+  network.stream.mockImplementation((input: URL, options: (typeof network.gotOptions)[number]) => {
+    network.gotOptions.push(options);
+    const request = new PassThrough();
+    queueMicrotask(async () => {
+      try {
+        const response = (await network.fetch(input, options)) as Response;
+        request.emit('response', {
+          statusCode: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+        });
+        request.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+      } catch (error) {
+        request.destroy(error as Error);
+      }
+    });
+    return request;
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('parseAndValidateOpenApi', () => {
+  it('parses and validates an OpenAPI 3.x YAML document', async () => {
+    const document = await parseAndValidateOpenApi(valid);
+    expect(document.openapi).toBe('3.1.0');
+    expect(document.paths).toHaveProperty('/pets');
+  });
+
+  it('returns actionable parser and standards validation errors', async () => {
+    await expect(parseAndValidateOpenApi('openapi: 3.1.0\ninfo: [broken')).rejects.toMatchObject({
+      message: 'The OpenAPI document is not valid JSON or YAML.',
+    });
+    await expect(parseAndValidateOpenApi('openapi: 3.1.0\ninfo: {}\npaths: {}')).rejects.toSatisfy(
+      (error: unknown) => error instanceof AppError && Array.isArray(error.details?.errors),
+    );
+  });
+
+  it('rejects Swagger 2 documents before publication', async () => {
+    await expect(parseAndValidateOpenApi('{"swagger":"2.0","info":{"title":"Old","version":"1"},"paths":{}}')).rejects.toThrow(
+      'Only OpenAPI 3.x documents are supported.',
+    );
+  });
+
+  it('securely bundles relative external references for URL and repository sources', async () => {
+    network.fetch.mockResolvedValue(new Response('type: object\nproperties:\n  id: { type: string }'));
+    const document = await parseAndValidateOpenApi(
+      valid.replace('type: object\n      properties:\n        name: { type: string }', '$ref: ./schemas/pet.yaml'),
+      'https://public.example/openapi.yaml',
+    );
+
+    expect(network.fetch).toHaveBeenCalledOnce();
+    expect(String(network.fetch.mock.calls[0]?.[0])).toBe('https://public.example/schemas/pet.yaml');
+    expect(document).toHaveProperty('x-ext');
+    expect(JSON.stringify(document)).not.toContain('./schemas/pet.yaml');
+  });
+
+  it('resolves local component references inside external documents', async () => {
+    network.fetch.mockResolvedValue(
+      new Response(`
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        name: { type: string }
+`),
+    );
+    const document = await parseAndValidateOpenApi(
+      `
+openapi: 3.1.0
+info: { title: Pets, version: 1.0.0 }
+paths:
+  /pets:
+    $ref: ./pet-api.yaml#/paths/~1pets
+`,
+      'https://public.example/openapi.yaml',
+    );
+
+    const bundled = document as {
+      paths: { '/pets': { $ref: string } };
+      'x-ext': Record<
+        string,
+        {
+          paths?: { '/pets'?: { get?: { responses?: { '200'?: { content?: { 'application/json'?: { schema?: { $ref?: string } } } } } } } };
+          components?: { schemas?: { Pet?: unknown } };
+        }
+      >;
+    };
+    const externalDocumentKey = bundled.paths['/pets'].$ref.match(/^#\/x-ext\/([^/]+)\/paths\/~1pets$/)?.[1];
+    const externalDocument = bundled['x-ext'][externalDocumentKey as string];
+    const responseSchemaRef = externalDocument?.paths?.['/pets']?.get?.responses?.['200']?.content?.['application/json']?.schema?.$ref;
+
+    expect(externalDocumentKey).toBeTruthy();
+    expect(responseSchemaRef).toBe(`#/x-ext/${externalDocumentKey}/components/schemas/Pet`);
+    expect(externalDocument?.components?.schemas?.Pet).toMatchObject({ type: 'object' });
+  });
+
+  it('resolves nested relative references and enforces the external-document limit', async () => {
+    network.fetch.mockImplementation(async (input: URL) =>
+      input.pathname.endsWith('/pet.yaml')
+        ? new Response('type: object\nproperties:\n  owner:\n    $ref: ./owner.yaml')
+        : new Response('type: object\nproperties:\n  name: { type: string }'),
+    );
+    const nested = await parseAndValidateOpenApi(
+      valid.replace('type: object\n      properties:\n        name: { type: string }', '$ref: ./schemas/pet.yaml'),
+      'https://public.example/openapi.yaml',
+    );
+    expect(network.fetch.mock.calls.map(([input]) => (input as URL).toString())).toEqual([
+      'https://public.example/schemas/pet.yaml',
+      'https://public.example/schemas/owner.yaml',
+    ]);
+    expect(JSON.stringify(nested)).not.toContain('./owner.yaml');
+
+    vi.clearAllMocks();
+    network.lookup.mockResolvedValue([{ address: '203.0.113.10', family: 4 }]);
+    network.fetch.mockResolvedValue(new Response('type: object'));
+    const tooMany = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Many references', version: '1' },
+      paths: {},
+      components: {
+        schemas: Object.fromEntries(Array.from({ length: 21 }, (_, index) => [`Schema${index}`, { $ref: `https://public.example/${index}.yaml` }])),
+      },
+    });
+    await expect(parseAndValidateOpenApi(tooMany)).rejects.toThrow('references more than 20 external files');
+  });
+
+  it('allows absolute public references in uploads but rejects relative or private references', async () => {
+    network.fetch.mockResolvedValue(new Response('type: object\nproperties:\n  id: { type: string }'));
+    await expect(
+      parseAndValidateOpenApi(
+        valid.replace('type: object\n      properties:\n        name: { type: string }', '$ref: https://public.example/pet.yaml'),
+      ),
+    ).resolves.toHaveProperty('x-ext');
+
+    await expect(parseAndValidateOpenApi(valid.replace('type: object', '$ref: ./pet.yaml'))).rejects.toThrow(
+      'Relative external references require a URL or repository source.',
+    );
+    await expect(parseAndValidateOpenApi(valid.replace('type: object', '$ref: http://127.0.0.1/pet.yaml'))).rejects.toThrow(
+      'must resolve only to public IP addresses',
+    );
+  });
+
+  it('rejects alias expansion bombs and oversized chunked responses', async () => {
+    const aliases = `openapi: 3.1.0\ninfo: &info { title: Pets, version: 1 }\npaths:\n${Array.from({ length: 22 }, (_, index) => `  /p${index}: *info`).join('\n')}`;
+    await expect(parseAndValidateOpenApi(aliases)).rejects.toThrow('unsafe or excessively complex YAML aliases');
+    await expect(readBoundedOpenApiResponse(new Response(new Uint8Array(MAX_OPENAPI_BYTES + 1)))).rejects.toThrow('larger than 5 MB');
+  });
+
+  it('never includes editable source details in published metadata', () => {
+    expect(
+      publicOpenApiMetadata({
+        title: 'API',
+        path: 'api-reference',
+        contentHash: 'abc',
+        updatedAt: '2026-08-16T00:00:00.000Z',
+      }),
+    ).toEqual({ title: 'API', path: 'api-reference', contentHash: 'abc', updatedAt: '2026-08-16T00:00:00.000Z' });
+  });
+
+  it('rejects credential-bearing and private-network source URLs before fetch', async () => {
+    await expect(fetchPublicOpenApi('https://token@example.com/openapi.json')).rejects.toThrow('must not include embedded credentials');
+    await expect(fetchPublicOpenApi('http://127.0.0.1/openapi.json')).rejects.toThrow('must resolve only to public IP addresses');
+    expect(network.fetch).not.toHaveBeenCalled();
+  });
+
+  it('pins each redirect connection to the address validated for that hostname', async () => {
+    network.lookup.mockImplementation(async (hostname: string) => [
+      { address: hostname === 'first.example' ? '203.0.113.11' : '198.51.100.22', family: 4 },
+    ]);
+    network.fetch.mockResolvedValueOnce(Response.redirect('https://second.example/openapi.json', 302)).mockResolvedValueOnce(new Response(valid));
+
+    await expect(fetchPublicOpenApi('https://first.example/openapi.json')).resolves.toContain('openapi: 3.1.0');
+
+    expect(network.lookup.mock.calls.map(([hostname]) => hostname)).toEqual(['first.example', 'second.example']);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+    expect((network.fetch.mock.calls[0]?.[0] as URL | undefined)?.hostname).toBe('first.example');
+    expect((network.fetch.mock.calls[1]?.[0] as URL | undefined)?.hostname).toBe('second.example');
+    expect(network.gotOptions).toHaveLength(2);
+    expect(network.gotOptions[0]).toMatchObject({ followRedirect: false, retry: { limit: 0 }, timeout: { request: 10_000 } });
+    expect(network.gotOptions[1]).toMatchObject({ followRedirect: false, retry: { limit: 0 }, timeout: { request: 10_000 } });
+
+    const pinned = await Promise.all(
+      network.gotOptions.map(
+        (options) =>
+          new Promise<{ address: string; family: number }>((resolve, reject) => {
+            options.dnsLookup?.('rebinding.example', {}, (error, address, family) => {
+              if (error) reject(error);
+              else if (Array.isArray(address)) reject(new Error('Expected one pinned address.'));
+              else resolve({ address, family: family ?? 0 });
+            });
+          }),
+      ),
+    );
+    expect(pinned).toEqual([
+      { address: '203.0.113.11', family: 4 },
+      { address: '198.51.100.22', family: 4 },
+    ]);
+
+    const pinnedLists = await Promise.all(
+      network.gotOptions.map(
+        (options) =>
+          new Promise<Array<{ address: string; family: number }>>((resolve, reject) => {
+            options.dnsLookup?.('rebinding.example', { all: true }, (error, addresses) => {
+              if (error) reject(error);
+              else if (Array.isArray(addresses)) resolve(addresses);
+              else reject(new Error('Expected a pinned address list.'));
+            });
+          }),
+      ),
+    );
+    expect(pinnedLists).toEqual([[{ address: '203.0.113.11', family: 4 }], [{ address: '198.51.100.22', family: 4 }]]);
+  });
+
+  it('retains redirect and declared-size bounds with Got redirects disabled', async () => {
+    network.fetch.mockResolvedValue(new Response(null, { status: 302, headers: { location: '/next' } }));
+    await expect(fetchPublicOpenApi('https://public.example/openapi.json')).rejects.toThrow('redirected too many times');
+    expect(network.fetch).toHaveBeenCalledTimes(4);
+    expect(network.gotOptions).toHaveLength(4);
+    expect(network.gotOptions.every((options) => options.followRedirect === false && options.retry?.limit === 0)).toBe(true);
+
+    vi.clearAllMocks();
+    network.gotOptions.length = 0;
+    network.lookup.mockResolvedValue([{ address: '203.0.113.10', family: 4 }]);
+    network.stream.mockImplementation((input: URL, options: (typeof network.gotOptions)[number]) => {
+      network.gotOptions.push(options);
+      const request = new PassThrough();
+      queueMicrotask(async () => {
+        const response = (await network.fetch(input, options)) as Response;
+        request.emit('response', { statusCode: response.status, headers: Object.fromEntries(response.headers.entries()) });
+        request.end();
+      });
+      return request;
+    });
+    network.fetch.mockResolvedValue(new Response(null, { headers: { 'content-length': String(MAX_OPENAPI_BYTES + 1) } }));
+    await expect(fetchPublicOpenApi('https://public.example/openapi.json')).rejects.toThrow('larger than 5 MB');
+    expect(network.gotOptions).toHaveLength(1);
+  });
+});

@@ -1,0 +1,343 @@
+# Nibleaf — Coolify production stack.
+#
+# Use this compose file in Coolify for Nibleaf Cloud production. The public
+# product is served by `app`; the internal admin console is a separate service.
+#
+# Assign Coolify domains to:
+#   app   : https://nibleaf.com:4310 -> dashboard + published docs + wildcard docs host
+#   admin : https://admin.nibleaf.com:4315 -> internal platform admin panel
+#   maxio : https://storage.nibleaf.com:9000 -> bundled public storage/media domain,
+#           unless using R2/S3
+#
+# Include the explicit container port in each Coolify domain. Every service uses
+# the same multi-service image, whose Dockerfile exposes several ports; without
+# `:4315`, Coolify can route the admin hostname to the image's first exposed port
+# and return 502 even while the admin container is healthy.
+#
+# Required DNS for free project subdomains:
+#   *.${SITE_BASE_DOMAIN} CNAME/AAAA/A -> the Coolify app ingress
+#
+# Required DNS for custom domains:
+#   customers CNAME their docs host to ${CUSTOM_DOMAIN_CNAME_TARGET}
+#
+# Set NIBLEAF_HEALTHCHECK_HOST to the dashboard host without a scheme when your
+# app uses host-based routing.
+#
+name: nibleaf-coolify
+
+# GitHub Actions builds and publishes this shared multi-service image only after
+# the main branch passes CI. Pulling that image keeps production deployment
+# lightweight and prevents Coolify from rebuilding the full monorepo on its
+# resource-constrained management host.
+
+# The manual Docker workflow publishes the production candidate as `latest` by
+# default. Keep this fallback aligned with that workflow: a mismatched `main`
+# fallback can successfully redeploy an older image while the new digest sits
+# unused in GHCR. Production may still pin NIBLEAF_IMAGE_TAG explicitly.
+x-nibleaf-image: &nibleaf-image ghcr.io/lord007tn/nibleaf:${NIBLEAF_IMAGE_TAG:-latest}
+
+x-service-env: &service-env
+  NODE_ENV: production
+  PINO_LOG_LEVEL: ${PINO_LOG_LEVEL:-info}
+  PINO_LOG_FILE: ${PINO_LOG_FILE:-}
+  POSTGRES_URL: postgresql://${SERVICE_USER_POSTGRES:?set SERVICE_USER_POSTGRES}:${SERVICE_PASSWORD_64_POSTGRES:?set SERVICE_PASSWORD_64_POSTGRES}@postgres:5432/${POSTGRES_DB:-nibleaf}
+  REDIS_HOST: dragonfly
+  REDIS_PORT: "6379"
+  ANALYTICS_MODE: ${ANALYTICS_MODE:-disabled}
+  ANALYTICS_HASH_SALT: ${ANALYTICS_HASH_SALT:-}
+  CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+  CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-nibleaf_analytics}
+  CLICKHOUSE_READER_USERNAME: ${CLICKHOUSE_READER_USERNAME:-nibleaf}
+  CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:-${SERVICE_PASSWORD_64_CLICKHOUSE:?set SERVICE_PASSWORD_64_CLICKHOUSE}}
+  CLICKHOUSE_WRITER_USERNAME: ${CLICKHOUSE_WRITER_USERNAME:-nibleaf}
+  CLICKHOUSE_WRITER_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-${SERVICE_PASSWORD_64_CLICKHOUSE:?set SERVICE_PASSWORD_64_CLICKHOUSE}}
+  QUEUE_CLUSTER: "true"
+  STORAGE_PROVIDER: ${STORAGE_PROVIDER:-maxio}
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-http://maxio:9000}
+  STORAGE_PUBLIC_ENDPOINT: ${STORAGE_PUBLIC_ENDPOINT:-https://storage.nibleaf.com}
+  STORAGE_REGION: ${STORAGE_REGION:-auto}
+  STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-${SERVICE_USER_STORAGE:?set STORAGE_ACCESS_KEY_ID or SERVICE_USER_STORAGE}}
+  STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-${SERVICE_PASSWORD_64_STORAGE:?set STORAGE_SECRET_ACCESS_KEY or SERVICE_PASSWORD_64_STORAGE}}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-nibleaf}
+  STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-true}
+  STORAGE_PUBLIC_URL: ${STORAGE_PUBLIC_URL:-https://storage.nibleaf.com/nibleaf}
+  STORAGE_CORS_ALLOWED_ORIGINS: ${STORAGE_CORS_ALLOWED_ORIGINS:-https://nibleaf.com,https://www.nibleaf.com,https://admin.nibleaf.com}
+  STORAGE_AUTO_CORS: ${STORAGE_AUTO_CORS:-true}
+  BETTER_AUTH_SECRET: ${SERVICE_HEX_64_NIBLEAF:?set SERVICE_HEX_64_NIBLEAF}
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:-https://nibleaf.com}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  # Public-instance default: require a verified email before sign-in. Needs
+  # POSTMARK_API_KEY (or SMTP_URL) configured so the mail can be delivered.
+  TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-https://nibleaf.com,https://www.nibleaf.com,https://admin.nibleaf.com}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://nibleaf.com,https://www.nibleaf.com,https://admin.nibleaf.com}
+  MCP_ENABLED: ${MCP_ENABLED:-false}
+  MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+  MCP_RATE_LIMIT_PER_MIN: ${MCP_RATE_LIMIT_PER_MIN:-120}
+  API_PORT: "4311"
+  SERVER_SHUTDOWN_TIMEOUT_MS: ${SERVER_SHUTDOWN_TIMEOUT_MS:-25000}
+  API_URL: http://server:4311
+  APP_URL: ${APP_URL:-https://nibleaf.com}
+  ADMIN_URL: ${ADMIN_URL:-https://admin.nibleaf.com}
+  SITE_BASE_DOMAIN: ${SITE_BASE_DOMAIN:-nibleaf.com}
+  # Dedicated DNS-only ingress target. Do not use the Cloudflare-proxied apex:
+  # third-party hostnames can otherwise be claimed by a former SaaS provider at
+  # the shared edge even after their DNS CNAME is changed.
+  CUSTOM_DOMAIN_CNAME_TARGET: ${CUSTOM_DOMAIN_CNAME_TARGET:-cname.nibleaf.com}
+  # Cloudflare for SaaS provisions customer hostnames and certificates. Coolify
+  # only owns the three fixed DNS-only origins; it never receives per-customer
+  # domain configuration.
+  CUSTOM_DOMAIN_PROVIDER: ${CUSTOM_DOMAIN_PROVIDER:-ingress}
+  CLOUDFLARE_SAAS_ZONE_ID: ${CLOUDFLARE_SAAS_ZONE_ID:-}
+  CLOUDFLARE_SAAS_API_TOKEN: ${CLOUDFLARE_SAAS_API_TOKEN:-}
+  CLOUDFLARE_SAAS_WORKER_SCRIPT: ${CLOUDFLARE_SAAS_WORKER_SCRIPT:-nibleaf-custom-domain-edge}
+  CUSTOM_DOMAIN_EDGE_SECRET: ${CUSTOM_DOMAIN_EDGE_SECRET:-}
+  INTEGRATION_CREDENTIAL_ENCRYPTION_KEY: ${INTEGRATION_CREDENTIAL_ENCRYPTION_KEY:-}
+  INTEGRATION_CREDENTIAL_PREVIOUS_KEYS: ${INTEGRATION_CREDENTIAL_PREVIOUS_KEYS:-}
+  INTEGRATION_CONFIRMATION_TTL_SECONDS: ${INTEGRATION_CONFIRMATION_TTL_SECONDS:-300}
+  INTEGRATION_CONFIRMATION_RETENTION_HOURS: ${INTEGRATION_CONFIRMATION_RETENTION_HOURS:-24}
+  INTEGRATION_IDEMPOTENCY_TTL_HOURS: ${INTEGRATION_IDEMPOTENCY_TTL_HOURS:-24}
+  WORKER_PORT: "4312"
+  # nibleaf.com is domain-verified in Postmark, so any sender at the domain works.
+  EMAIL_FROM: ${EMAIL_FROM:-Nibleaf <no-reply@nibleaf.com>}
+  POSTMARK_API_KEY: ${POSTMARK_API_KEY:-}
+  POSTMARK_MESSAGE_STREAM: ${POSTMARK_MESSAGE_STREAM:-}
+  EMAIL_DELIVERY_REQUIRED: ${EMAIL_DELIVERY_REQUIRED:-true}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  AI_DRAFT_MODEL: ${AI_DRAFT_MODEL:-openai/gpt-4o-mini}
+  AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-}
+  RATE_LIMIT_PUBLIC_PER_MIN: ${RATE_LIMIT_PUBLIC_PER_MIN:-}
+  # Keep this at 0 unless the public ingress sanitizes X-Forwarded-For and you
+  # have captured the real header chain. Cloudflare -> Traefik commonly needs 1
+  # because Traefik appends Cloudflare's source address. See:
+  # https://docs.nibleaf.com/self-hosting/production
+  TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+  DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+  MARKETING_GTM_ID: ${MARKETING_GTM_ID:-}
+  MARKETING_GA4_ID: ${MARKETING_GA4_ID:-}
+  # Shared secret letting the app's SSR proxy attribute published-site traffic
+  # to the real visitor IP for rate limiting (openssl rand -hex 32).
+  INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+  # Basic auth for the worker's BullMQ dashboard at :4312/jobs — without BOTH
+  # set, /jobs is unauthenticated to anything that can reach the worker.
+  WORKBENCH_USER: ${WORKBENCH_USER:-}
+  WORKBENCH_PASS: ${WORKBENCH_PASS:-}
+  NIBLEAF_RUN_SEED: ${NIBLEAF_RUN_SEED:-false}
+  QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+  QDRANT_COLLECTION_ALIAS: ${QDRANT_COLLECTION_ALIAS:-nibleaf_search_active}
+  QDRANT_COLLECTION_VERSION: ${QDRANT_COLLECTION_VERSION:-v1}
+  QDRANT_VECTOR_SIZE: ${SEARCH_EMBEDDING_DIMENSIONS:-1536}
+  SEARCH_RUNTIME: ${SEARCH_RUNTIME:-shadow}
+  SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-openai/text-embedding-3-small}
+  SEARCH_EMBEDDING_DIMENSIONS: ${SEARCH_EMBEDDING_DIMENSIONS:-1536}
+  SEARCH_ANSWER_ENABLED: ${SEARCH_ANSWER_ENABLED:-false}
+  SEARCH_ANSWER_MODEL: ${SEARCH_ANSWER_MODEL:-openai/gpt-5.6-luna}
+  SEARCH_ANSWER_DAILY_PER_PROJECT: ${SEARCH_ANSWER_DAILY_PER_PROJECT:-200}
+  SEARCH_ANSWER_RATE_LIMIT_PER_MIN: ${SEARCH_ANSWER_RATE_LIMIT_PER_MIN:-10}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${SERVICE_USER_POSTGRES:?set SERVICE_USER_POSTGRES}
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES:?set SERVICE_PASSWORD_64_POSTGRES}
+      POSTGRES_DB: ${POSTGRES_DB:-nibleaf}
+    volumes:
+      - nibleaf-coolify-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0
+    restart: unless-stopped
+    command: ["dragonfly", "--cluster_mode=emulated", "--lock_on_hashtags"]
+    volumes:
+      - nibleaf-coolify-dragonfly:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
+    volumes:
+      - nibleaf-coolify-qdrant:/qdrant/storage
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-nibleaf_analytics}
+      CLICKHOUSE_USER: ${CLICKHOUSE_WRITER_USERNAME:-nibleaf}
+      CLICKHOUSE_PASSWORD: ${SERVICE_PASSWORD_64_CLICKHOUSE:?set SERVICE_PASSWORD_64_CLICKHOUSE}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - nibleaf-coolify-clickhouse:/var/lib/clickhouse
+      - nibleaf-coolify-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  maxio:
+    image: docker.io/coollabsio/maxio:0.4.2
+    restart: unless-stopped
+    environment:
+      MAXIO_ACCESS_KEY: ${STORAGE_ACCESS_KEY_ID:-${SERVICE_USER_STORAGE:?set STORAGE_ACCESS_KEY_ID or SERVICE_USER_STORAGE}}
+      MAXIO_SECRET_KEY: ${STORAGE_SECRET_ACCESS_KEY:-${SERVICE_PASSWORD_64_STORAGE:?set STORAGE_SECRET_ACCESS_KEY or SERVICE_PASSWORD_64_STORAGE}}
+      MAXIO_REGION: ${STORAGE_REGION:-auto}
+      MAXIO_DEFAULT_BUCKETS: ${STORAGE_BUCKET:-nibleaf}
+      MAXIO_PUBLIC_BUCKETS: ${STORAGE_BUCKET:-nibleaf}
+      MAXIO_SECURE_COOKIES: ${MAXIO_SECURE_COOKIES:-true}
+    expose:
+      - "9000"
+    volumes:
+      - nibleaf-coolify-maxio:/data
+    healthcheck:
+      test: ["CMD", "maxio", "healthcheck", "--url", "http://127.0.0.1:9000/healthz", "--timeout-ms", "2000"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  migrate:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["migrate"]
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  analytics-migrate:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["clickhouse-migrate"]
+    environment: *service-env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["server"]
+    init: true
+    stop_grace_period: ${NIBLEAF_SHUTDOWN_GRACE:-45s}
+    environment: *service-env
+    expose:
+      - "4311"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4311/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["worker"]
+    init: true
+    stop_grace_period: ${NIBLEAF_SHUTDOWN_GRACE:-45s}
+    environment: *service-env
+    expose:
+      - "4312"
+    depends_on:
+      dragonfly:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4312/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  app:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["app"]
+    init: true
+    stop_grace_period: ${NIBLEAF_SHUTDOWN_GRACE:-45s}
+    environment:
+      <<: *service-env
+      PORT: "4310"
+      VITE_SITE_BASE_DOMAIN: ${SITE_BASE_DOMAIN:-nibleaf.com}
+    expose:
+      - "4310"
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -A nibleaf-healthcheck -H \"Host: ${NIBLEAF_HEALTHCHECK_HOST:-nibleaf.com}\" http://127.0.0.1:4310/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  admin:
+    image: *nibleaf-image
+    pull_policy: always
+    command: ["admin"]
+    init: true
+    stop_grace_period: ${NIBLEAF_SHUTDOWN_GRACE:-45s}
+    # Coolify generates the Traefik router/service labels for the domain you
+    # assign to this service. If your Coolify instance routes the admin domain
+    # to the wrong container port, add instance-specific labels in the Coolify
+    # UI (do not commit them — they embed your resource UUID).
+    environment:
+      <<: *service-env
+      PORT: "4315"
+      VITE_API_URL: http://server:4311
+    expose:
+      - "4315"
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4315/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  nibleaf-coolify-pg:
+    name: nibleaf-coolify-pg
+  nibleaf-coolify-dragonfly:
+    name: nibleaf-coolify-dragonfly
+  nibleaf-coolify-qdrant:
+    name: nibleaf-coolify-qdrant
+  nibleaf-coolify-maxio:
+    name: nibleaf-coolify-maxio
+  nibleaf-coolify-clickhouse:
+    name: nibleaf-coolify-clickhouse
+  nibleaf-coolify-clickhouse-logs:
+    name: nibleaf-coolify-clickhouse-logs

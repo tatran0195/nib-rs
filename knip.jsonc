@@ -1,0 +1,31 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "apps/docs/.source/**",
+    "apps/app/public/guides/fixtures/markdown-round-trip.mdx"
+  ],
+  "workspaces": {
+    "apps/custom-domain-edge": {
+      "entry": ["src/index.ts", "cloudflare.config.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    ".": {
+      "entry": [
+        "scripts/graceful-web-service.mjs",
+        "scripts/site-preview-mock.mjs",
+        "scripts/site-preview-shots.mjs",
+        "scripts/split-ghost-by-language.mjs"
+      ]
+    },
+    "apps/server": {
+      "entry": ["src/scripts/grant-admin.ts"],
+      "ignoreDependencies": ["quansync"]
+    },
+    "packages/database": {
+      "ignoreDependencies": ["@prisma/client"]
+    },
+    "packages/tsconfig": {
+      "ignoreDependencies": ["vite"]
+    }
+  }
+}

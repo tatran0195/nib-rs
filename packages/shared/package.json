@@ -1,0 +1,43 @@
+{
+  "name": "@nibleaf/shared",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./addons": "./src/addons.ts",
+    "./constants": "./src/constants.ts",
+    "./rbac": "./src/rbac.ts",
+    "./ids": "./src/ids.ts",
+    "./integrations": "./src/integrations.ts",
+    "./mcp": "./src/mcp.ts",
+    "./markdown-discovery": "./src/markdown-discovery.ts",
+    "./markdown-code": "./src/markdown-code.ts",
+    "./public-markdown": "./src/public-markdown.ts",
+    "./public-markdown-content": "./src/public-markdown-content.ts",
+    "./redirects": "./src/redirects.ts",
+    "./crypto": "./src/crypto.ts",
+    "./site": "./src/site.ts",
+    "./documentation-components": "./src/documentation-components.ts",
+    "./themes": "./src/themes.ts",
+    "./theme-repository": "./src/theme-repository.ts",
+    "./export-schedule": "./src/export-schedule.ts",
+    "./utils": "./src/utils.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "github-slugger": "^2.0.0",
+    "nanoid": "^6.0.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@nibleaf/tsconfig": "workspace:*",
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2"
+  }
+}

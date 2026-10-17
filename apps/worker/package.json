@@ -1,0 +1,50 @@
+{
+  "name": "@nibleaf/worker",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run with-env tsx watch --clear-screen=false src/index.ts",
+    "build": "tsdown",
+    "start": "node ./dist/index.mjs",
+    "with-env": "dotenv -e ../../.env --",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getworkbench/hono": "^0.9.1",
+    "@hono/node-server": "^2.1.1",
+    "@nibleaf/bullmq": "workspace:*",
+    "@nibleaf/clickhouse": "workspace:*",
+    "@nibleaf/database": "workspace:*",
+    "@nibleaf/email": "workspace:*",
+    "@nibleaf/logger": "workspace:*",
+    "@nibleaf/qdrant": "workspace:*",
+    "@nibleaf/search": "workspace:*",
+    "@nibleaf/shared": "workspace:*",
+    "@nibleaf/storage": "workspace:*",
+    "@nibleaf/usage": "workspace:*",
+    "@t3-oss/env-core": "^0.13.11",
+    "bullmq": "^6.2.0",
+    "fflate": "^0.8.2",
+    "got": "16.0.0",
+    "hono": "^4.13.5",
+    "marked": "^18.0.10",
+    "nodemailer": "^9.1.1",
+    "pdf-lib": "^1.17.1",
+    "playwright-core": "^1.55.0",
+    "postmark": "^5.1.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@nibleaf/tsconfig": "workspace:*",
+    "@types/node": "^22.20.1",
+    "@types/nodemailer": "^8.0.1",
+    "dotenv-cli": "^11.0.0",
+    "tsdown": "^0.22.14",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

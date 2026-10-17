@@ -1,0 +1,72 @@
+{
+  "name": "@nibleaf/root",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.30.3",
+  "pnpm": {
+    "overrides": {
+      "@tiptap/extension-bubble-menu": "3.30.4",
+      "@tiptap/extension-floating-menu": "3.30.4",
+      "@tiptap/y-tiptap": "3.0.7",
+      "deepmerge-ts": "8.0.2",
+      "fast-uri": "3.1.6",
+      "mysql2": "3.23.1",
+      "qs": "6.16.0",
+      "remark-mdx-frontmatter>toml": "4.2.0",
+      "sharp": "0.35.3",
+      "undici": "7.29.0"
+    }
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "build:server": "turbo run build -F @nibleaf/server...",
+    "build:worker": "turbo run build -F @nibleaf/worker...",
+    "build:app": "turbo run build -F @nibleaf/app...",
+    "dev": "turbo watch dev -F @nibleaf/server -F @nibleaf/worker -F @nibleaf/app",
+    "dev:full": "turbo watch dev",
+    "dev:server": "turbo watch dev -F @nibleaf/server...",
+    "dev:app": "turbo watch dev -F @nibleaf/app...",
+    "clean": "turbo run clean && git clean -xdf node_modules",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "lint": "ultracite check",
+    "format": "biome format --write .",
+    "typecheck": "turbo run typecheck",
+    "test": "node --test scripts/email-runtime.test.mjs scripts/ui-primitives.test.mjs scripts/service-signals.test.mjs && turbo run test",
+    "check:dead-code": "knip --include files,dependencies,exports,types,duplicates --no-config-hints",
+    "check:react": "react-doctor --project @nibleaf/app,@nibleaf/admin --no-dead-code --no-supply-chain --no-score --blocking error",
+    "release:notes": "pnpm dlx changelogithub@14.0.0",
+    "release:check": "node --test scripts/coolify-release-probes.test.mjs scripts/coolify-env-literal.test.mjs && node scripts/check-release-contract.mjs",
+    "self-host:check": "node scripts/self-host-release.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
+    "theme-repository:fixture": "tsx scripts/theme-repository-fixture.ts",
+    "db:generate": "pnpm --filter @nibleaf/database generate",
+    "db:migrate": "pnpm --filter @nibleaf/database migrate:dev",
+    "db:deploy": "pnpm --filter @nibleaf/database migrate:deploy",
+    "db:push": "pnpm --filter @nibleaf/database push",
+    "db:seed": "pnpm --filter @nibleaf/server seed",
+    "db:studio": "pnpm --filter @nibleaf/database studio",
+    "analytics:migrate": "pnpm --filter @nibleaf/clickhouse migrate",
+    "analytics:backfill": "tsx scripts/analytics-migration.ts backfill",
+    "analytics:reconcile": "tsx scripts/analytics-migration.ts reconcile",
+    "analytics:rollback": "tsx scripts/analytics-migration.ts rollback"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11",
+    "@nibleaf/clickhouse": "workspace:*",
+    "@nibleaf/database": "workspace:*",
+    "@nibleaf/tsconfig": "workspace:*",
+    "knip": "6.34.0",
+    "react-doctor": "0.9.13",
+    "turbo": "^2.10.12",
+    "typescript": "^7.0.2",
+    "tsx": "4.23.13",
+    "ultracite": "7.10.7",
+    "vitest": "^4.1.11"
+  }
+}

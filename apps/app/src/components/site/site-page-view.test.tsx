@@ -1,0 +1,102 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import type { SitePage } from '@/hooks/api/types';
+import { SitePageView } from './site-page-view';
+
+vi.mock('@/components/site/page-alternates-context', () => ({ useSitePageAlternates: () => ({ setAlternates: vi.fn() }) }));
+vi.mock('@/providers/site-analytics-provider', () => ({ useSiteAnalytics: () => ({ track: vi.fn() }) }));
+
+const data = (overrides: Partial<SitePage> = {}): SitePage => ({
+  project: {
+    id: 'project-1',
+    name: 'Example docs',
+    slug: 'example',
+    description: null,
+    config: { visibility: 'public', addons: { feedback: false, editSuggestions: false, issueLinks: false } },
+    primaryDomain: null,
+  },
+  page: {
+    id: 'page-1',
+    createdAt: '2026-09-03T00:00:00.000Z',
+    updatedAt: '2026-09-03T00:00:00.000Z',
+    title: 'Start',
+    description: 'A public page.',
+    excerpt: 'A public page.',
+    icon: null,
+    path: 'start',
+    content: 'Public body.',
+    headings: [],
+    config: { mode: 'center' },
+  },
+  activeLanguage: 'en',
+  activeVersion: 'main',
+  versions: [{ id: 'version-1', name: 'Main', slug: 'main', isDefault: true }],
+  languageConfig: null,
+  languages: [
+    { code: 'en', isDefault: true, path: 'start' },
+    { code: 'ar', isDefault: false, path: 'start' },
+  ],
+  breadcrumbs: [{ title: 'Start', path: 'start' }],
+  prev: null,
+  next: null,
+  ...overrides,
+});
+
+describe('published page presentation', () => {
+  it.each(['en', 'ar'])('uses clean navigation and body links for the configured default %s language', (code) => {
+    const fixture = data({
+      activeLanguage: code,
+      languages: [{ code, isDefault: true, path: 'start' }],
+      breadcrumbs: [
+        { title: 'Parent', path: 'parent' },
+        { title: 'Start', path: 'start' },
+      ],
+      page: { ...data().page, content: '[Sibling](/sibling#setup)\n\n[Explicit](/other?lang=fr)' },
+      next: { title: 'Next', path: 'next' },
+    });
+    const html = renderToStaticMarkup(<SitePageView data={fixture} lang={code} projectId="project-1" />);
+    expect(html).toContain('href="/sites/project-1/sibling#setup"');
+    expect(html).toContain('href="/sites/project-1/parent"');
+    expect(html).toContain('href="/sites/project-1/next"');
+    expect(html).toContain('href="/sites/project-1/other?lang=fr"');
+    expect(html).not.toContain(`?lang=${code}`);
+  });
+
+  it('keeps a non-default language and version on generated reader links', () => {
+    const fixture = data({
+      activeLanguage: 'ar',
+      activeVersion: 'v2',
+      versions: [{ id: 'v2', name: 'V2', slug: 'v2', isDefault: false }],
+      page: { ...data().page, content: '[Sibling](/sibling#setup)' },
+      next: { title: 'Next', path: 'next' },
+    });
+    const html = renderToStaticMarkup(<SitePageView data={fixture} lang="ar" projectId="project-1" />);
+    expect(html).toContain('href="/sites/project-1/v2/sibling?lang=ar#setup"');
+    expect(html).toContain('href="/sites/project-1/v2/next?lang=ar"');
+  });
+  it('excludes literal image examples from article screenshot counts but counts prose images', () => {
+    const examples = ['````mdx', '<img src="/literal.png" />', '```', '![Example](/literal.png)', '````', '`<img src="/inline.png" />`'].join('\n');
+    const render = (content: string) =>
+      renderToStaticMarkup(<SitePageView data={data({ page: { ...data().page, content } })} projectId="project-1" />);
+    expect(render(examples)).not.toContain('screenshot');
+    expect(render(`${examples}\n![Actual](/actual.png)`)).toContain('screenshot');
+    expect(render(`${examples}\n![Actual](/actual.png)`)).not.toContain('screenshots');
+  });
+
+  it.each(['en', 'ar'])('shows public %s content without Markdown source controls', (language) => {
+    const html = renderToStaticMarkup(<SitePageView data={data({ activeLanguage: language })} lang={language} projectId="project-1" />);
+    expect(html).toContain('Public body.');
+    expect(html).not.toContain('type="text/markdown"');
+    expect(html).not.toMatch(/View Markdown|Copy Markdown|عرض Markdown|نسخ Markdown/);
+  });
+
+  it.each([
+    { label: 'private', patch: { project: { ...data().project, config: { visibility: 'private' as const } } } },
+    { label: 'noindex', patch: { page: { ...data().page, config: { seo: { noindex: true } } } } },
+    { label: 'external canonical', patch: { page: { ...data().page, config: { seo: { canonicalUrl: 'https://origin.example/start' } } } } },
+  ])('hides the controls for $label content', ({ patch }) => {
+    const html = renderToStaticMarkup(<SitePageView data={data(patch)} projectId="project-1" />);
+    expect(html).not.toContain('View Markdown');
+    expect(html).not.toContain('Copy Markdown');
+  });
+});

@@ -1,0 +1,88 @@
+import { describe, expect, it } from 'vitest';
+import { buildMintlifyLanguageRouteMap, buildMintlifyRouteMap, mintlifyInternalLinkTargets, rewriteMintlifyInternalLinks } from './mintlify-links';
+import { type NavNode, parseMintlifyLanguages } from './mintlify-mapping';
+
+const nodes: NavNode[] = [
+  {
+    kind: 'group',
+    title: 'Documentation',
+    slug: 'docs',
+    origin: 'group',
+    children: [
+      { kind: 'group', title: 'Getting Started', origin: 'group', children: [{ kind: 'page', path: 'quickstart' }] },
+      {
+        kind: 'group',
+        title: 'Language guides',
+        origin: 'group',
+        children: [
+          { kind: 'page', path: 'nodejs-express' },
+          { kind: 'page', path: 'guides/python-fastapi' },
+        ],
+      },
+    ],
+  },
+];
+
+describe('buildMintlifyRouteMap', () => {
+  it('maps Mintlify source paths to their imported grouped public routes', () => {
+    const routes = buildMintlifyRouteMap(nodes);
+    expect(routes.get('quickstart')).toBe('/docs/getting-started/quickstart');
+    expect(routes.get('guides/python-fastapi')).toBe('/docs/language-guides/python-fastapi');
+  });
+});
+
+describe('rewriteMintlifyInternalLinks', () => {
+  it('does not discover or rewrite page links inside code examples', () => {
+    const literal = ['~~~mdx', '[Hidden](./hidden)', '<Card href="./quickstart" />', '~~~', '`[Inline](./hidden)`'].join('\n');
+    const input = `${literal}\n[Start](./quickstart)`;
+    const routes = new Map([
+      ['quickstart', '/docs/start'],
+      ['hidden', '/docs/hidden'],
+    ]);
+    expect(mintlifyInternalLinkTargets(input, 'intro')).toEqual(['quickstart']);
+    expect(rewriteMintlifyInternalLinks(input, 'intro', routes)).toBe(`${literal}\n[Start](/docs/start)`);
+  });
+  it('maps a translated target in the matching version while retaining query and fragment', () => {
+    const { languages } = parseMintlifyLanguages({
+      navigation: {
+        languages: [
+          { language: 'en', pages: ['intro'] },
+          {
+            language: 'ar',
+            versions: [
+              { version: 'v1', groups: [{ group: 'Old', pages: ['ar/intro'] }] },
+              { version: 'v2', groups: [{ group: 'New', pages: ['ar/intro'] }] },
+            ],
+          },
+        ],
+      },
+    });
+    const routes = buildMintlifyLanguageRouteMap(languages, 'en', 'v2');
+    expect(rewriteMintlifyInternalLinks('[Arabic](./ar/intro?from=guide#install)', 'intro', routes)).toBe(
+      '[Arabic](/new/intro?from=guide&lang=ar#install)',
+    );
+    expect(buildMintlifyLanguageRouteMap(languages, 'en', 'missing').size).toBe(0);
+  });
+
+  it('rewrites root, relative Markdown, and MDX href links while preserving suffixes and external URLs', () => {
+    const routes = buildMintlifyRouteMap(nodes);
+    const content = [
+      '[Node](/nodejs-express)',
+      '[Python](guides/python-fastapi#install)',
+      '<Card href="/quickstart?from=card">Start</Card>',
+      '[External](https://example.com/nodejs-express)',
+      '![Image](/nodejs-express.png)',
+    ].join('\n');
+    const result = rewriteMintlifyInternalLinks(content, 'quickstart', routes);
+    expect(result).toContain('[Node](/docs/language-guides/nodejs-express)');
+    expect(result).toContain('[Python](/docs/language-guides/python-fastapi#install)');
+    expect(result).toContain('href="/docs/getting-started/quickstart?from=card"');
+    expect(result).toContain('[External](https://example.com/nodejs-express)');
+    expect(result).toContain('![Image](/nodejs-express.png)');
+  });
+
+  it('discovers linked source pages while ignoring external links, fragments, and images', () => {
+    const content = '[Rules](../rules#syntax)\n<Card href="/ptrace">Ptrace</Card>\n[External](https://example.com)\n![Image](/ptrace.png)';
+    expect(mintlifyInternalLinkTargets(content, 'guides/quickstart')).toEqual(['rules', 'ptrace']);
+  });
+});
